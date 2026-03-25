@@ -10,7 +10,7 @@ import logging
 import os
 from subprocess import Popen, PIPE, TimeoutExpired
 import sys
-from typing import Any, Callable, Dict, Iterable, IO, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, IO, Iterator, List, Optional, Union
 import warnings
 
 from antismash.config import get_config
@@ -95,6 +95,7 @@ def execute(commands: List[str], stdin: Optional[str] = None, stdout: Union[int,
     if environment_overrides:
         env.update(environment_overrides)
 
+    logging.debug("Executing: %s", " ".join(commands))
     with Popen(commands, stdin=stdin_redir, stdout=stdout, stderr=stderr, env=env) as proc:
         try:
             out, err = proc.communicate(input=input_bytes, timeout=timeout)
@@ -105,6 +106,18 @@ def execute(commands: List[str], stdin: Optional[str] = None, stdout: Union[int,
 
         return RunResult(commands, out, err, proc.returncode, stdout == PIPE,
                          stderr == PIPE)
+
+
+def get_effective_cpus() -> int:
+    """ Returns cpus/workers if running inside a daemonic worker process
+        (distributing threads across workers), otherwise returns the configured
+        CPU count.
+    """
+    if multiprocessing.current_process().daemon:
+        config = get_config()
+        workers = getattr(config, "workers", config.cpus)
+        return max(1, config.cpus // workers)
+    return get_config().cpus
 
 
 def parallel_function(function: Callable, args: Iterable[List[Any]],
@@ -135,6 +148,11 @@ def parallel_function(function: Callable, args: Iterable[List[Any]],
         # list() to handle generators, * to expand the list of args
         return [function(*argset) for argset in args]
 
+    # if already in a worker process, run sequentially to avoid
+    # "daemonic processes are not allowed to have children" errors
+    if multiprocessing.current_process().daemon:
+        return [function(*argset) for argset in args]
+
     with multiprocessing.Pool(cpus) as pool:
         jobs = pool.starmap_async(function, args)
 
@@ -148,8 +166,65 @@ def parallel_function(function: Callable, args: Iterable[List[Any]],
             pool.terminate()
             pool.join()
     if timeouts:
-        raise RuntimeError("Timeout in parallel function:", function)
+        raise RuntimeError(f"Timeout in parallel function: {function}")
     return results
+
+
+class _StarUnpacker:
+    """ Picklable wrapper that unpacks an arg list and calls a function.
+
+        imap_unordered passes a single argument to the mapped function, but
+        parallel_function_lazy callers pass lists of arguments (like
+        starmap_async).  This class bridges the two: it stores the target
+        function and unpacks each arg list when called.
+
+        Defined at module level (not as a closure) so it can be pickled by
+        multiprocessing.
+    """
+    __slots__ = ("_function",)
+
+    def __init__(self, function: Callable) -> None:
+        self._function = function
+
+    def __call__(self, argset: List[Any]) -> Any:
+        return self._function(*argset)
+
+
+def parallel_function_lazy(function: Callable, args: Iterable[List[Any]],
+                           cpus: Optional[int] = None,
+                           chunksize: int = 1) -> Iterator[Any]:
+    """ Lazy version of parallel_function that yields results one at a time
+        as workers complete, instead of collecting all results into a list.
+
+        Uses Pool.imap_unordered so only one result needs to be in memory at
+        a time on the consumer side.  The Pool is kept alive for the lifetime
+        of the returned generator.
+
+        Arguments:
+            function: the function to run, cannot be a lambda
+            args: an iterable of argument lists for each function call
+            cpus: the number of processes to start (defaults to Config.cpus)
+            chunksize: how many tasks to dispatch to each worker at a time
+
+        Yields:
+            return values of the target function, in arbitrary order
+    """
+    if not cpus:
+        cpus = get_config().cpus
+
+    # single-core or daemonic: run sequentially as a generator
+    if cpus == 1 or multiprocessing.current_process().daemon:
+        for argset in args:
+            yield function(*argset)
+        return
+
+    pool = multiprocessing.Pool(cpus)
+    try:
+        for result in pool.imap_unordered(_StarUnpacker(function), args, chunksize=chunksize):
+            yield result
+    finally:
+        pool.terminate()
+        pool.join()
 
 
 def child_process(command: List[str]) -> int:

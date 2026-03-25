@@ -158,6 +158,19 @@ def regenerate_previous_results(previous: Dict[str, Any], record: Record,
     return ClusterCompareResults.from_json(previous, record)
 
 
+def preload_databases(options: ConfigType) -> None:
+    """ Pre-load cluster_compare reference data for fork CoW sharing.
+
+        Must be called before forking worker processes.
+
+        Arguments:
+            options: antismash config
+    """
+    from .data_structures import load_data
+    for db in _get_all_databases(options):
+        load_data(os.path.join(db.path, "data.json"))
+
+
 def run_on_record(record: Record, results: Optional[ClusterCompareResults],
                   options: ConfigType) -> ClusterCompareResults:
     """ Run this module's analysis on the requested databases. If previous results

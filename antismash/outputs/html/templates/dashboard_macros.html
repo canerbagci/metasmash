@@ -1,0 +1,6 @@
+{% macro stat_card(label, value) -%}
+<div class="stat-card">
+  <span class="stat-value">{{"{:,d}".format(value)}}</span>
+  <span class="stat-label">{{label}}</span>
+</div>
+{%- endmacro %}

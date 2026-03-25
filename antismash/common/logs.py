@@ -44,9 +44,9 @@ def changed_logging(logfile: str = None, verbose: bool = False, debug: bool = Fa
         elif verbose:
             log_level = logging.INFO
 
-        log_format = '%(levelname)-8s %(asctime)s   %(message)s'
+        log_format = '%(levelname)-8s %(asctime)s   [pid %(process)d]  %(message)s'
         date_format = "%d/%m %H:%M:%S"
-        logging.basicConfig(format=log_format, datefmt=date_format)
+        logging.basicConfig(format=log_format, datefmt=date_format, force=True)
         logger.setLevel(log_level)
 
         handler = None

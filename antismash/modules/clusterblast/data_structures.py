@@ -129,6 +129,11 @@ class ProteinDB:
             self._rebuilt[identifier] = protein
         return protein
 
+    def warm_cache(self) -> None:
+        """ Fully populates the rebuilt cache from the raw JSON """
+        for identifier in list(self._raw.keys()):
+            self.get_protein(identifier)
+
     @classmethod
     def from_file(cls, file_path: str) -> Self:
         """ Constructs a database from the given file """

@@ -14,7 +14,7 @@ from antismash.common.html_renderer import (
     Markup,
     RIPP_CLASSES,
 )
-from antismash.common.subprocessing import execute
+from antismash.common.subprocessing import execute, get_effective_cpus
 from antismash.config import ConfigType
 
 from .data_structures import Hit, JsonConvertible
@@ -175,7 +175,7 @@ def run_simple_blastp(database: ComparippsonDB, query_sequences: Dict[str, str],
     """
     command = [
         options.executables.blastp,
-        "-num_threads", str(options.cpus),
+        "-num_threads", str(get_effective_cpus()),
         "-db", database.get_fasta_path(options),
         "-outfmt", Hit.BLAST_FORMAT,
     ]

@@ -9,7 +9,6 @@ import argparse
 import glob
 import logging
 import os
-import re
 import shutil
 import stat
 from typing import Dict, List, Optional
@@ -22,8 +21,12 @@ from antismash.common.module_results import ModuleResults
 from antismash.common.secmet import Record
 from antismash.custom_typing import AntismashModule
 from antismash.config import ConfigType
-from antismash.config.args import ModuleArgs
-from antismash.outputs.html.generator import generate_webpage, find_local_antismash_js_path
+from antismash.config.args import ModuleArgs, ReadableFullPathAction
+from antismash.outputs.html.generator import (
+    generate_webpage, generate_dashboard, find_local_antismash_js_path,
+    _strip_leading_whitespace,
+)
+from antismash.outputs.html.taxonomy import parse_taxonomy_file
 
 NAME = "html"
 SHORT_DESCRIPTION = "HTML output"
@@ -53,6 +56,14 @@ def get_arguments() -> ModuleArgs:
                     action=argparse.BooleanOptionalAction,
                     default=False,
                     help="Show NCBI genomic context links for genes (default: %(default)s).")
+    args.add_option("--html-taxonomy",
+                    dest="html_taxonomy",
+                    type=str,
+                    action=ReadableFullPathAction,
+                    default="",
+                    metavar="PATH",
+                    help=("Path to a two-column TSV file mapping contig IDs to "
+                          "taxonomy lineages for the dashboard overview table."))
     return args
 
 
@@ -92,13 +103,15 @@ def is_enabled(options: ConfigType) -> bool:
 
 
 def write(records: List[Record], results: List[Dict[str, ModuleResults]],
-          options: ConfigType, all_modules: List[AntismashModule]) -> None:
+          options: ConfigType, all_modules: List[AntismashModule],
+          skipped_record_count: int = 0) -> None:
     """ Writes all results to a webpage, where applicable. Writes to options.output_dir
 
         Arguments:
             records: the list of Records for which results exist
             results: a list of dictionaries containing all module results for records
             options: antismash config object
+            skipped_record_count: number of records excluded by --skip-records-without-regions
 
         Returns:
             None
@@ -120,11 +133,26 @@ def write(records: List[Record], results: List[Dict[str, ModuleResults]],
 
     copy_template_dir('images', output_dir)
 
+    # Generate the original detailed results page (now regions.html)
+    regions_content, records_with, records_without, options_layer, page_title = \
+        generate_webpage(records, results, options, all_modules,
+                         skipped_record_count=skipped_record_count)
+    regions_content = _strip_leading_whitespace(regions_content)
+    with open(os.path.join(options.output_dir, "regions.html"), "w", encoding="utf-8") as result_file:
+        result_file.write(regions_content)
+
+    # Load optional taxonomy mapping
+    taxonomy_mapping: Dict[str, str] = {}
+    if options.html_taxonomy:
+        taxonomy_mapping = parse_taxonomy_file(options.html_taxonomy)
+
+    # Generate the dashboard landing page (index.html)
+    dashboard_content = generate_dashboard(records_with, records_without, options_layer, page_title,
+                                           taxonomy_mapping=taxonomy_mapping,
+                                           skipped_record_count=skipped_record_count)
+    dashboard_content = _strip_leading_whitespace(dashboard_content)
     with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as result_file:
-        content = generate_webpage(records, results, options, all_modules)
-        # strip all leading whitespace and blank lines, as they're meaningless to HTML
-        content = re.sub("^( *|$)", "", content, flags=re.M)
-        result_file.write(content)
+        result_file.write(dashboard_content)
 
 
 def copy_template_dir(template: str, output_dir: str, pattern: Optional[str] = None) -> None:

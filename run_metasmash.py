@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convenience wrapper to run antiSMASH directly from the source tree without installing.
+Convenience wrapper to run MetaSMASH directly from the source tree without installing.
 """
 import sys
 # wrap the import in a try/except as the import is lengthy and SIGINT is noisy

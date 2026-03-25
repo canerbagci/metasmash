@@ -5,6 +5,29 @@
   <meta charset="utf-8" />
   <title>{{page_title}} - {{regions_written}} region(s) - antiSMASH results</title>
   <style>img {width: 20px; height: 20px;}</style>
+  <script>
+  (function () {
+      var raw = sessionStorage.getItem("antismash_bgc_selection");
+      if (!raw) return;
+      try { var sel = JSON.parse(raw); } catch (e) { return; }
+      if (!Array.isArray(sel) || sel.length === 0) return;
+      var set = {};
+      for (var i = 0; i < sel.length; i++) set[sel[i]] = true;
+      var css = "";
+      var allAnchors = {{ records | sum(attribute='regions', start=[]) | map(attribute='anchor_id') | list | tojson }};
+      for (var j = 0; j < allAnchors.length; j++) {
+          if (!set[allAnchors[j]]) {
+              css += '.linked-row[data-anchor="#' + allAnchors[j] + '"]{display:none !important}';
+          }
+      }
+      if (css) {
+          var s = document.createElement("style");
+          s.id = "bgc-filter-style";
+          s.textContent = css;
+          document.head.appendChild(s);
+      }
+  })();
+  </script>
   <link rel="stylesheet" type="text/css" href="css/{{options.taxon}}.css">
   <meta property="og:title" content="{{page_title}} - {{records | length}} record(s) - {{regions_written}} region(s)" />
   <meta property="og:description" content="{{options.html_description}}">
@@ -17,26 +40,28 @@
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@antismash_dev" />
 </head>
-{% set multi_record = records | length + records_without_regions | length > 1 %}
+{% set multi_record = records | length + records_without_regions | length + skipped_record_count > 1 %}
 <body>
   <div id="header">
     {% include 'header.html' %}
-    <div id="buttons">
-      <span id="region-type">Select genomic region:</span>
-      <div id="regionbuttons">
-        <div class="arrow-left" id="prev-region"></div>
-        <div class="regbutton" style="min-width: inherit;"><a href="#">Overview</a></div>
-        <div style="display: flex; flex-wrap: wrap">
-        {% for record in records %}
-          {% for region in record.regions %}
-            {{region_table.region_button(region, "div", get_region_css(region))}}
-              <a href="#{{region.anchor_id}}">{{record.record_index}}.{{region.get_region_number()}}</a>
-            </div>
-          {% endfor %}
-        {% endfor %}
-        </div>
-        <div id="last-regbutton"><div class="arrow-right" id="next-region"></div></div>
-      </div>
+  </div>
+
+  <div class="dashboard-nav">
+    <a class="dashboard-nav-item" href="index.html">Dashboard</a>
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item dashboard-nav-active" href="regions.html">Detailed Results</a>
+  </div>
+
+  <div id="buttons">
+    <span id="region-type" class="region-toggle">
+      <span class="region-toggle-icon">&#9660;</span>
+      Select genomic region:
+    </span>
+    <div id="regionbuttons">
+      <div class="arrow-left" id="prev-region"></div>
+      <div class="regbutton" style="min-width: inherit;"><a href="#">Overview</a></div>
+      <div id="region-button-container" style="display: flex; flex-wrap: wrap"></div>
+      <div id="last-regbutton"><div class="arrow-right" id="next-region"></div></div>
     </div>
   </div>
 
@@ -52,20 +77,34 @@
    <div class="overview-layout">
     <div id="record-tables">
      <div id="single-record-tables">
-     {% for record in records -%}
-      <div class="record-overview-header">
-        {{record.get_from_record()}}
-        <div class="download-container">
-          <div class="download-icon-inverse download-svg" data-tag="record-minimap-{{record.record_index}}" data-filename="{{record.id}}_overview.svg">
+     {% set ns = namespace(svg_idx=0) %}
+     {% for batch in records | batch(50) %}
+      <div class="overview-page" data-page="{{ loop.index0 }}"
+           {% if not loop.first %}style="display:none"{% endif %}>
+       {% for record in batch -%}
+        {% set ns.svg_idx = ns.svg_idx + 1 %}
+        <div class="record-overview-header">
+          {{record.get_from_record()}}
+          <div class="download-container">
+            <div class="download-icon-inverse download-svg" data-tag="record-minimap-{{ns.svg_idx}}" data-filename="{{record.id}}_overview.svg">
+            </div>
           </div>
         </div>
+        <div class="record-overview-details">
+          <svg id="record-minimap-{{ns.svg_idx}}" class="record-overview-svg" height="1" width="1"></svg>
+          {{ region_table.single_record_table(record, multi_record, options, get_region_css) }}
+        </div>
+       {%- endfor %}
       </div>
-      <div class="record-overview-details">
-        <svg id="record-minimap-{{record.record_index}}" class="record-overview-svg" height="1" width="1"></svg>
-        {{ region_table.single_record_table(record, multi_record, options, get_region_css) }}
-      </div>
-     {%- endfor %}
+     {% endfor %}
      </div>
+     {% if records | length > 50 %}
+     <div class="overview-pagination" id="overview-pagination">
+       <button id="overview-page-prev" class="bgc-page-btn" disabled>&laquo; Prev</button>
+       <span id="overview-page-info" class="bgc-page-info"></span>
+       <button id="overview-page-next" class="bgc-page-btn">Next &raquo;</button>
+     </div>
+     {% endif %}
      {% if multi_record %}
      <div id="compact-record-table" style="display: none;">
       <div class="record-table">
@@ -73,13 +112,11 @@
       </div>
      </div>
      {% endif %}
-     {% if records_without_regions %}
-     <dl id="regionless-records">
-      <dt class="record-overview-header">No secondary metabolite regions were found in these records:</dt>
-       {% for record in records_without_regions %}
-         <dd>{{record.get_from_record()}}</dd>
-       {% endfor %}
-     </dl>
+     {% set regionless_count = records_without_regions | length + skipped_record_count %}
+     {% if regionless_count > 0 %}
+     <div id="regionless-records">
+      <p class="record-overview-header">No secondary metabolite regions were found in {{ regionless_count }} record{{ "s" if regionless_count != 1 }}.</p>
+     </div>
      {% endif %}
     </div>
     {% if multi_record %}
@@ -95,15 +132,689 @@
   </div>
   {% endif %}
 
-{% include 'regions.html' %}
+{% if lazy_loading %}
+  <div id="lazy-placeholder-anchor"></div>
+{% else %}
+  {% include 'regions.html' %}
+{% endif %}
 {% include 'footer.html' %}
 
   <script src="js/jquery.js"></script>
   <script src="{{as_js_url}}"></script>
   <script src="regions.js"></script>
+{% if lazy_loading %}
+  <script src="regions_data.js"></script>
+  <script src="js/pako_inflate.min.js"></script>
+  <script src="js/lazy_loader.js"></script>
+{% endif %}
   <script>
+    // Derive region button and placeholder data from all_regions (avoids
+    // duplicating 13K+ entries inline when Jinja renders the template).
+    function _anchorToLabel(anchor) {
+        var m = anchor.match(/^r(\d+)c(\d+)$/);
+        return m ? m[1] + "." + m[2] : anchor;
+    }
+
+    var PRELOAD_THRESHOLD = 30;
+    var PAGINATION_THRESHOLD = 50;
+    var REGIONS_PER_PAGE = 50;
+
+    /**
+     * Paginator for the detailed (regions) view when a large BGC filter is active.
+     */
+    var bgcPaginator = (function () {
+        var _allAnchors = [];  // full filtered list of anchors
+        var _anchorSet = {};   // O(1) lookup: anchor -> true
+        var _currentPage = 0;
+        var _pageSize = REGIONS_PER_PAGE;
+        var _active = false;
+
+        function init(anchors) {
+            _allAnchors = anchors.slice();
+            _anchorSet = {};
+            for (var i = 0; i < anchors.length; i++) {
+                _anchorSet[anchors[i]] = true;
+            }
+            _currentPage = 0;
+            _active = true;
+        }
+
+        function destroy() {
+            _allAnchors = [];
+            _anchorSet = {};
+            _currentPage = 0;
+            _active = false;
+        }
+
+        function isActive() { return _active; }
+
+        function totalPages() {
+            return Math.ceil(_allAnchors.length / _pageSize);
+        }
+
+        function currentPage() { return _currentPage; }
+
+        function currentPageAnchors() {
+            var start = _currentPage * _pageSize;
+            return _allAnchors.slice(start, start + _pageSize);
+        }
+
+        function currentPageFilterSet() {
+            var set = {};
+            var anchors = currentPageAnchors();
+            for (var i = 0; i < anchors.length; i++) {
+                set[anchors[i]] = true;
+            }
+            return set;
+        }
+
+        function pageForAnchor(anchor) {
+            var idx = _allAnchors.indexOf(anchor);
+            if (idx === -1) return -1;
+            return Math.floor(idx / _pageSize);
+        }
+
+        function goToPage(pageIdx) {
+            if (pageIdx < 0) pageIdx = 0;
+            if (pageIdx >= totalPages()) pageIdx = totalPages() - 1;
+            _currentPage = pageIdx;
+        }
+
+        function hasAnchor(anchor) {
+            return !!_anchorSet[anchor];
+        }
+
+        return {
+            init: init,
+            destroy: destroy,
+            isActive: isActive,
+            totalPages: totalPages,
+            currentPage: currentPage,
+            currentPageAnchors: currentPageAnchors,
+            currentPageFilterSet: currentPageFilterSet,
+            pageForAnchor: pageForAnchor,
+            goToPage: goToPage,
+            hasAnchor: hasAnchor
+        };
+    })();
+
+    /**
+     * Render the detailed view for the current paginator page.
+     * Called on every page change (Next/Prev/hash-based auto-switch).
+     */
+    function renderDetailedPage() {
+        if (!bgcPaginator.isActive()) return;
+
+{% if lazy_loading %}
+        // 1. Cancel any in-flight preload
+        lazyRegionLoader.cancelPreload();
+{% endif %}
+
+        var pageSet = bgcPaginator.currentPageFilterSet();
+        var pageAnchors = bgcPaginator.currentPageAnchors();
+
+{% if lazy_loading %}
+        // 2. Remove placeholder divs NOT on current page (keep already-loaded ones)
+        $("[data-lazy='true']").each(function () {
+            var id = this.id;
+            if (!pageSet[id]) {
+                $(this).remove();
+            }
+        });
+{% endif %}
+
+        // 3. Rebuild region buttons for current page
+        buildRegionButtons(pageAnchors);
+
+{% if lazy_loading %}
+        // 4. Rebuild placeholders for current page
+        buildPlaceholders(pageAnchors);
+        // 4b. Re-inject HTML for regions already loaded but whose DOM was recreated
+        lazyRegionLoader.reinjectLoaded(pageAnchors);
+{% endif %}
+
+        // 5. Patch all_regions.order to current page's anchors (for prev/next nav)
+        all_regions.order = pageAnchors.slice();
+
+{% if lazy_loading %}
+        // 6. Re-scan for new placeholders
+        lazyRegionLoader._reinitState();
+{% endif %}
+
+        // 6b. Reset record section visibility (may be hidden from previous page)
+        $("#single-record-tables .record-overview-details").show();
+        $("#single-record-tables .record-overview-header").show();
+
+        // 7. Hide/show overview table rows to match current page
+        $("#single-record-tables .linked-row").each(function () {
+            var anchor = $(this).data("anchor");
+            var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+            if (pageSet[anchorId]) {
+                $(this).show();
+            } else {
+                $(this).hide();
+            }
+        });
+        // Same for compact table
+        $("#compact-record-table .linked-row").each(function () {
+            var anchor = $(this).data("anchor");
+            var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+            if (pageSet[anchorId]) {
+                $(this).show();
+            } else {
+                $(this).hide();
+            }
+        });
+
+        // 8. Hide empty record sections
+        $("#single-record-tables .record-overview-details").each(function () {
+            var hasVisible = false;
+            $(this).find(".linked-row").each(function () {
+                if ($(this).is(":visible")) {
+                    hasVisible = true;
+                    return false;
+                }
+            });
+            if (hasVisible) {
+                $(this).show();
+                $(this).prev(".record-overview-header").show();
+            } else {
+                $(this).hide();
+                $(this).prev(".record-overview-header").hide();
+            }
+        });
+
+        // 9. Update pagination controls
+        updateDetailedPagination();
+
+{% if lazy_loading %}
+        // 10. Preload current page's regions
+        lazyRegionLoader.preloadAnchors(pageAnchors, 6);
+{% endif %}
+    }
+
+    /**
+     * Update the pagination controls (Prev/Next buttons and info text).
+     */
+    function updateDetailedPagination() {
+        if (!bgcPaginator.isActive()) return;
+        var cur = bgcPaginator.currentPage();
+        var total = bgcPaginator.totalPages();
+        var pageAnchors = bgcPaginator.currentPageAnchors();
+        $("#detailed-page-info").text(
+            "Page " + (cur + 1) + " of " + total + " (" + pageAnchors.length + " regions)"
+        );
+        $("#detailed-page-prev").prop("disabled", cur === 0);
+        $("#detailed-page-next").prop("disabled", cur >= total - 1);
+    }
+
+    /**
+     * Build region breadcrumb buttons into #region-button-container.
+     * @param {Array} anchors - ordered array of anchor IDs to render
+     */
+    function buildRegionButtons(anchors) {
+        var container = document.getElementById("region-button-container");
+        if (!container) return;
+        container.innerHTML = "";
+        for (var i = 0; i < anchors.length; i++) {
+            var anchor = anchors[i];
+            var r = all_regions[anchor];
+            if (!r) continue;
+            var div = document.createElement("div");
+            div.className = "regbutton " + (r.cssClass || "") + " " + anchor;
+            var a = document.createElement("a");
+            a.href = "#" + anchor;
+            a.textContent = _anchorToLabel(anchor);
+            div.appendChild(a);
+            container.appendChild(div);
+        }
+    }
+
+    /**
+     * Build lazy-load placeholder divs after #lazy-placeholder-anchor.
+     * Skips regions that already have a DOM element (already loaded).
+     * @param {Array} anchors - ordered array of anchor IDs to create placeholders for
+     */
+    function buildPlaceholders(anchors) {
+        var marker = document.getElementById("lazy-placeholder-anchor");
+        if (!marker) return;
+        for (var i = 0; i < anchors.length; i++) {
+            var anchor = anchors[i];
+            if (document.getElementById(anchor)) continue;
+            var div = document.createElement("div");
+            div.className = "page";
+            div.id = anchor;
+            div.setAttribute("data-lazy", "true");
+            div.style.display = "none";
+            div.innerHTML = '<div class="lazy-placeholder">'
+                + '<div class="loading-spinner"></div>'
+                + '<p>Loading region ' + _anchorToLabel(anchor) + '...</p>'
+                + '</div>';
+            marker.parentNode.insertBefore(div, marker.nextSibling);
+        }
+    }
+
+    function applyBgcFilter() {
+        var raw = sessionStorage.getItem("antismash_bgc_selection");
+        var selectionSet = null;
+        var selected = null;
+
+        if (raw) {
+            try { selected = JSON.parse(raw); } catch (e) { selected = null; }
+            if (Array.isArray(selected) && selected.length > 0) {
+                selectionSet = {};
+                for (var i = 0; i < selected.length; i++) {
+                    selectionSet[selected[i]] = true;
+                }
+            } else {
+                selected = null;
+            }
+        }
+
+        var totalRegions = all_regions.order.length;
+
+        // If filter active, patch order to match dashboard's sort
+        if (selectionSet) {
+            all_regions._originalOrder = all_regions.order.slice();
+            all_regions.order = selected.slice();
+            all_regions._fullFilteredOrder = selected.slice();
+        }
+
+        // Build only the needed buttons and placeholders
+        buildRegionButtons(selectionSet ? selected : all_regions.order);
+{% if lazy_loading %}
+        buildPlaceholders(selectionSet ? selected : all_regions.order);
+{% endif %}
+
+        // If no filter active, we're done
+        if (!selectionSet) return null;
+
+        // Hide unselected overview table rows (handled by early CSS injection,
+        // but also apply jQuery hide for robustness / non-lazy paths)
+        $("#single-record-tables .linked-row").each(function () {
+            var anchor = $(this).data("anchor");
+            var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+            if (!selectionSet[anchorId]) {
+                $(this).hide();
+            }
+        });
+
+        // Hide empty record sections
+        $("#single-record-tables .record-overview-details").each(function () {
+            var hasSelected = false;
+            $(this).find(".linked-row").each(function () {
+                var anchor = $(this).data("anchor");
+                var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+                if (selectionSet[anchorId]) {
+                    hasSelected = true;
+                    return false; // break
+                }
+            });
+            if (!hasSelected) {
+                $(this).hide();
+                $(this).prev(".record-overview-header").hide();
+            }
+        });
+
+        // Reorder overview rows + record sections to match dashboard sort
+        // 1. Build anchorId -> position map from selected order
+        var orderMap = {};
+        for (var k = 0; k < selected.length; k++) {
+            orderMap[selected[k]] = k;
+        }
+
+        // 2. Save original DOM order for restore on "Show all"
+        //    Save per-tbody row order and record-section order
+        var savedRowOrders = [];
+        $("#single-record-tables .record-overview-details").each(function () {
+            var $tbody = $(this).find("tbody");
+            if ($tbody.length) {
+                savedRowOrders.push({ tbody: $tbody[0], rows: $tbody.children("tr").toArray() });
+            }
+        });
+        var $pageContainer = $("#single-record-tables .overview-page:first");
+        var savedSectionOrder = $pageContainer.length ? $pageContainer.children().toArray() : [];
+        all_regions._savedDomOrder = { rows: savedRowOrders, sections: savedSectionOrder, container: $pageContainer };
+
+        // 3. Within each visible record section, reorder .linked-row <tr>s
+        $("#single-record-tables .record-overview-details:visible").each(function () {
+            var $tbody = $(this).find("tbody");
+            if (!$tbody.length) return;
+            var $rows = $tbody.find("tr.linked-row:visible");
+            if ($rows.length < 2) return;
+            $rows.sort(function (a, b) {
+                var aId = ($(a).data("anchor") || "").replace(/^#/, "");
+                var bId = ($(b).data("anchor") || "").replace(/^#/, "");
+                return (orderMap[aId] !== undefined ? orderMap[aId] : 9999)
+                     - (orderMap[bId] !== undefined ? orderMap[bId] : 9999);
+            });
+            $rows.each(function () { $tbody.append(this); });
+        });
+
+        // 4. Reorder record sections (header + details pairs) by earliest selected region
+        if ($pageContainer.length) {
+            var sections = [];
+            $pageContainer.children(".record-overview-header").each(function () {
+                var $header = $(this);
+                var $details = $header.next(".record-overview-details");
+                if (!$header.is(":visible")) return; // skip hidden records
+                var minPos = 9999;
+                $details.find("tr.linked-row:visible").each(function () {
+                    var anchorId = ($(this).data("anchor") || "").replace(/^#/, "");
+                    if (orderMap[anchorId] !== undefined && orderMap[anchorId] < minPos) {
+                        minPos = orderMap[anchorId];
+                    }
+                });
+                sections.push({ $header: $header, $details: $details, minPos: minPos });
+            });
+            sections.sort(function (a, b) { return a.minPos - b.minPos; });
+            for (var s = 0; s < sections.length; s++) {
+                $pageContainer.append(sections[s].$header);
+                $pageContainer.append(sections[s].$details);
+            }
+        }
+
+        // Show all pagination pages when filtering — the filtered set is small
+        $(".overview-page").show();
+        $("#overview-pagination").hide();
+
+        // Filter compact table rows
+        $("#compact-record-table .linked-row").each(function () {
+            var anchor = $(this).data("anchor");
+            var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+            if (!selectionSet[anchorId]) {
+                $(this).hide();
+            }
+        });
+
+        // Reorder compact table rows to match dashboard sort
+        var $compactTbody = $("#compact-record-table tbody");
+        if ($compactTbody.length) {
+            // Save original compact row order for restore
+            all_regions._savedCompactOrder = $compactTbody.children("tr").toArray();
+            var $compactRows = $compactTbody.find("tr.linked-row:visible");
+            if ($compactRows.length > 1) {
+                $compactRows.sort(function (a, b) {
+                    var aId = ($(a).data("anchor") || "").replace(/^#/, "");
+                    var bId = ($(b).data("anchor") || "").replace(/^#/, "");
+                    return (orderMap[aId] !== undefined ? orderMap[aId] : 9999)
+                         - (orderMap[bId] !== undefined ? orderMap[bId] : 9999);
+                });
+                $compactRows.each(function () { $compactTbody.append(this); });
+            }
+        }
+
+        // If selection is large enough, activate pagination
+        if (selected.length > PAGINATION_THRESHOLD) {
+            bgcPaginator.init(all_regions.order);
+            var pageAnchors = bgcPaginator.currentPageAnchors();
+            var pageSet = bgcPaginator.currentPageFilterSet();
+            // Rebuild buttons/placeholders for first page only
+            buildRegionButtons(pageAnchors);
+{% if lazy_loading %}
+            // Remove placeholders not on first page
+            $("[data-lazy='true']").each(function () {
+                if (!pageSet[this.id]) $(this).remove();
+            });
+            buildPlaceholders(pageAnchors);
+{% endif %}
+            // Patch order to first page's anchors
+            all_regions.order = pageAnchors.slice();
+            // Filter overview rows to current page only
+            $("#single-record-tables .linked-row").each(function () {
+                var anchor = $(this).data("anchor");
+                var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+                if (!pageSet[anchorId]) {
+                    $(this).hide();
+                }
+            });
+            // Hide record sections with no visible rows on this page
+            $("#single-record-tables .record-overview-details").each(function () {
+                var hasVisible = false;
+                $(this).find(".linked-row").each(function () {
+                    if ($(this).is(":visible")) {
+                        hasVisible = true;
+                        return false;
+                    }
+                });
+                if (!hasVisible) {
+                    $(this).hide();
+                    $(this).prev(".record-overview-header").hide();
+                }
+            });
+            // Filter compact table rows to current page only
+            $("#compact-record-table .linked-row").each(function () {
+                var anchor = $(this).data("anchor");
+                var anchorId = anchor ? anchor.replace(/^#/, "") : "";
+                if (!pageSet[anchorId]) {
+                    $(this).hide();
+                }
+            });
+        }
+
+        // Show filter banner
+        var bannerHtml = '<div id="bgc-filter-banner" class="bgc-filter-banner">'
+            + 'Showing ' + selected.length + ' of ' + totalRegions + ' regions (filtered from dashboard). '
+            + '<a href="#" id="bgc-show-all-regions">Show all regions</a>'
+            + '</div>';
+        $("#buttons").before(bannerHtml);
+
+        // Append pagination controls if active
+        if (bgcPaginator.isActive()) {
+            var paginationHtml = '<div id="detailed-pagination" class="detailed-pagination">'
+                + '<button id="detailed-page-prev" class="bgc-page-btn" disabled>&laquo; Prev</button>'
+                + '<span id="detailed-page-info" class="bgc-page-info"></span>'
+                + '<button id="detailed-page-next" class="bgc-page-btn">Next &raquo;</button>'
+                + '</div>';
+            $("#bgc-filter-banner").after(paginationHtml);
+        }
+
+        // "Show all regions" handler
+        $(document).on("click", "#bgc-show-all-regions", function (e) {
+            e.preventDefault();
+{% if lazy_loading %}
+            // Cancel in-flight preloads
+            if (typeof lazyRegionLoader !== "undefined") {
+                lazyRegionLoader.cancelPreload();
+            }
+{% endif %}
+            // Destroy paginator and remove pagination UI
+            bgcPaginator.destroy();
+            $("#detailed-pagination").remove();
+            // Restore region order BEFORE rebuilding buttons
+            if (all_regions._originalOrder) {
+                all_regions.order = all_regions._originalOrder;
+                delete all_regions._originalOrder;
+            }
+            delete all_regions._fullFilteredOrder;
+            // Rebuild all buttons and placeholders
+            buildRegionButtons(all_regions.order);
+{% if lazy_loading %}
+            buildPlaceholders(all_regions.order);
+            lazyRegionLoader.reinjectLoaded(all_regions.order);
+{% endif %}
+            // Restore original DOM order (undo reordering from filter)
+            if (all_regions._savedDomOrder) {
+                var saved = all_regions._savedDomOrder;
+                // Restore record section order
+                if (saved.container && saved.container.length && saved.sections.length) {
+                    for (var i = 0; i < saved.sections.length; i++) {
+                        saved.container.append(saved.sections[i]);
+                    }
+                }
+                // Restore row order within each tbody
+                for (var j = 0; j < saved.rows.length; j++) {
+                    var entry = saved.rows[j];
+                    for (var r = 0; r < entry.rows.length; r++) {
+                        entry.tbody.appendChild(entry.rows[r]);
+                    }
+                }
+                delete all_regions._savedDomOrder;
+            }
+            // Restore hidden overview rows and remove early CSS injection
+            var filterStyle = document.getElementById("bgc-filter-style");
+            if (filterStyle) filterStyle.parentNode.removeChild(filterStyle);
+            $("#single-record-tables .linked-row").show();
+            $("#single-record-tables .record-overview-details").show();
+            $("#single-record-tables .record-overview-header").show();
+            // Restore pagination
+            if ($(".overview-page").length > 1) {
+                $(".overview-page").hide();
+                $(".overview-page").first().show();
+                $("#overview-pagination").show();
+            }
+            // Restore compact table row order and visibility
+            if (all_regions._savedCompactOrder) {
+                var $ct = $("#compact-record-table tbody");
+                for (var c = 0; c < all_regions._savedCompactOrder.length; c++) {
+                    $ct[0].appendChild(all_regions._savedCompactOrder[c]);
+                }
+                delete all_regions._savedCompactOrder;
+            }
+            $("#compact-record-table .linked-row").show();
+{% if lazy_loading %}
+            // Register newly created placeholders with the lazy loader
+            if (typeof lazyRegionLoader !== "undefined") {
+                lazyRegionLoader._reinitState();
+            }
+{% endif %}
+            // Remove banner and clear sessionStorage
+            $("#bgc-filter-banner").remove();
+            sessionStorage.removeItem("antismash_bgc_selection");
+        });
+
+        return selected;
+    }
+
+    // Overview record section pagination
+    function initOverviewPagination() {
+        var $pages = $(".overview-page");
+        if ($pages.length <= 1) return;
+        var currentPage = 0;
+        var totalPages = $pages.length;
+
+        function showPage(idx) {
+            $pages.hide();
+            $pages.eq(idx).show();
+            currentPage = idx;
+            $("#overview-page-info").text("Page " + (idx + 1) + " of " + totalPages);
+            $("#overview-page-prev").prop("disabled", idx === 0);
+            $("#overview-page-next").prop("disabled", idx >= totalPages - 1);
+            // Trigger SVG redraw for newly-visible records
+            if (typeof viewer !== "undefined" && viewer["start"]) {
+{% if lazy_loading %}
+                viewer["start"](all_regions, resultsData, recordData);
+{% else %}
+                viewer["start"](all_regions, resultsData, recordData);
+{% endif %}
+            }
+        }
+
+        $("#overview-page-prev").on("click", function () {
+            if (currentPage > 0) showPage(currentPage - 1);
+        });
+        $("#overview-page-next").on("click", function () {
+            if (currentPage < totalPages - 1) showPage(currentPage + 1);
+        });
+
+        // Set initial page info text
+        $("#overview-page-info").text("Page 1 of " + totalPages);
+    }
+
     $(document).ready(function() {
+        // Apply filter FIRST so all_regions.order is patched and only
+        // needed placeholders exist before the lazy loader initialises
+        var _bgcFilterSelected = applyBgcFilter();
+{% if lazy_loading %}
+        lazyRegionLoader.init(all_regions, recordData, resultsData);
+        if (_bgcFilterSelected) {
+            var count = _bgcFilterSelected.length;
+            if (count <= PRELOAD_THRESHOLD) {
+                // Small selection: preload all with concurrency limit
+                lazyRegionLoader.preloadAnchors(_bgcFilterSelected, 6);
+            } else if (count > PAGINATION_THRESHOLD) {
+                // Large selection: preload current page only
+                lazyRegionLoader.preloadAnchors(bgcPaginator.currentPageAnchors(), 6);
+            }
+            // Medium (31–50): no preload, on-demand only
+        }
+{% else %}
         viewer["start"](all_regions, resultsData, recordData);
+{% endif %}
+
+        // Collapsible region buttons
+        $("#region-type").on("click", function () {
+            $(this).toggleClass("collapsed");
+            $("#regionbuttons").slideToggle(200);
+        });
+
+        // Initialize overview pagination
+        initOverviewPagination();
+
+        // --- Detailed-view pagination handlers ---
+        if (bgcPaginator.isActive()) {
+            updateDetailedPagination();
+
+            // Delegated click handlers for prev/next buttons
+            $(document).on("click", "#detailed-page-prev", function () {
+                if (bgcPaginator.currentPage() > 0) {
+                    bgcPaginator.goToPage(bgcPaginator.currentPage() - 1);
+                    renderDetailedPage();
+                    history.replaceState(null, "", window.location.pathname + window.location.search);
+                    $(".page").hide();
+                    $("#overview").show();
+                }
+            });
+            $(document).on("click", "#detailed-page-next", function () {
+                if (bgcPaginator.currentPage() < bgcPaginator.totalPages() - 1) {
+                    bgcPaginator.goToPage(bgcPaginator.currentPage() + 1);
+                    renderDetailedPage();
+                    history.replaceState(null, "", window.location.pathname + window.location.search);
+                    $(".page").hide();
+                    $("#overview").show();
+                }
+            });
+
+            // Hash-based auto-page-switch
+            $(window).on("hashchange.detailedPagination", function () {
+                if (!bgcPaginator.isActive()) return;
+                var h = window.location.hash.replace(/^#/, "");
+                if (!h || !bgcPaginator.hasAnchor(h)) return;
+                var targetPage = bgcPaginator.pageForAnchor(h);
+                if (targetPage !== -1 && targetPage !== bgcPaginator.currentPage()) {
+                    bgcPaginator.goToPage(targetPage);
+                    renderDetailedPage();
+{% if lazy_loading %}
+                    lazyRegionLoader.loadAndShow(h);
+{% endif %}
+                }
+            });
+
+            // Handle initial hash pointing to a non-first page
+            var initHash = window.location.hash.replace(/^#/, "");
+            if (initHash && bgcPaginator.hasAnchor(initHash)) {
+                var initPage = bgcPaginator.pageForAnchor(initHash);
+                if (initPage > 0) {
+                    bgcPaginator.goToPage(initPage);
+                    renderDetailedPage();
+{% if lazy_loading %}
+                    lazyRegionLoader.loadAndShow(initHash);
+{% endif %}
+                }
+            }
+        }
+
+        // Hide pagination when viewing a region detail, show on overview
+        function _togglePaginationVisibility() {
+            var h = window.location.hash.replace(/^#/, "");
+            if (h) {
+                $("#detailed-pagination").hide();
+            } else {
+                $("#detailed-pagination").show();
+            }
+        }
+        $(window).on("hashchange.paginationVisibility", _togglePaginationVisibility);
+        _togglePaginationVisibility();
     })
   </script>
 

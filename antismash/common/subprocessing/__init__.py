@@ -6,8 +6,10 @@
 
 from .base import (
     execute,
+    get_effective_cpus,
     parallel_execute,
     parallel_function,
+    parallel_function_lazy,
     RunResult,
 )
 

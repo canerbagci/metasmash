@@ -15,6 +15,38 @@ KNOWN_MAPPINGS: Dict[str, Dict[str, str]] = {}  # tracks name mappings per datab
 KNOWN_CUTOFFS: Dict[str, Dict[str, float]] = {}  # tracks profile cutoffs per database
 
 
+def init_shared_cache():
+    """No-op. PFAM caches are pre-loaded into module-level dicts
+    and inherited by forked workers via copy-on-write."""
+    pass
+
+
+def preload_pfam_cutoffs(database: str) -> None:
+    """Pre-loads the PFAM cutoffs for a database into the module-level cache.
+
+    This function should be called before spawning worker processes
+    to ensure the cache is populated and inherited via fork COW.
+
+    Arguments:
+        database: the path to the database to pre-load
+    """
+    if database not in KNOWN_CUTOFFS:
+        KNOWN_CUTOFFS[database] = _build_cutoff_mapping(database)
+
+
+def preload_pfam_mappings(database: str) -> None:
+    """Pre-loads the PFAM name-to-id mappings for a database into the module-level cache.
+
+    This function should be called before spawning worker processes
+    to ensure the cache is populated and inherited via fork COW.
+
+    Arguments:
+        database: the path to the database to pre-load
+    """
+    if database not in KNOWN_MAPPINGS:
+        KNOWN_MAPPINGS[database] = _build_mapping(database)
+
+
 def find_latest_database_version(database_dir: str) -> str:
     """ Finds the most up-to-date PFAM database version in the given directory.
         Versions are expected to be in a XY.Z format, e.g. 27.0
@@ -166,7 +198,6 @@ def get_pfam_cutoffs(database: str) -> Dict[str, float]:
     """
     if database not in KNOWN_CUTOFFS:
         KNOWN_CUTOFFS[database] = _build_cutoff_mapping(database)
-
     return KNOWN_CUTOFFS[database]
 
 
@@ -185,7 +216,6 @@ def get_pfam_id_from_name(name: str, database: str) -> str:
     """
     if database not in KNOWN_MAPPINGS:
         KNOWN_MAPPINGS[database] = _build_mapping(database)
-
     return KNOWN_MAPPINGS[database][name]
 
 

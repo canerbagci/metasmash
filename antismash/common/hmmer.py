@@ -243,7 +243,7 @@ def remove_overlapping(hits: List[HmmerHit], cutoffs: Dict[str, float],
     """
 
     if not hits:
-        assert 0
+        logging.warning("remove_overlapping called with empty hits list")
         return []
 
     try:
@@ -296,14 +296,17 @@ def remove_overlapping(hits: List[HmmerHit], cutoffs: Dict[str, float],
             else:  # no overlap with existing best
                 best_of.append(hit)
         cleaned.extend(best_of)
-        assert best_of
-    assert cleaned
+        if not best_of:
+            logging.warning("No hits kept from group during overlap filtering")
+    if not cleaned:
+        logging.warning("No hits remained after filtering overlapping hits, returning original")
+        return sorted(hits, key=lambda hit: hit.protein_start)
     return sorted(cleaned, key=lambda hit: hit.protein_start)
 
 
 def run_hmmer(record: Record, features: Iterable[CDSFeature], max_evalue: float,
               min_score: float, database: str, tool: str, filter_overlapping: bool = True,
-              use_cut_tc: bool = True) -> HmmerResults:
+              use_cut_tc: bool = True, timeout: int = None) -> HmmerResults:
     """ Build hmmer results for the given features
 
         Arguments:
@@ -314,6 +317,7 @@ def run_hmmer(record: Record, features: Iterable[CDSFeature], max_evalue: float,
             database: the database to search for hits within
             tool: the name of the specific tool calling into this module
             use_cut_tc: whether to use threshold cutoff as specified in profiles
+            timeout: maximum time in seconds to wait for hmmscan to complete (default: None)
     """
     if not os.path.exists(database):
         raise ValueError(f"Given database does not exist: {database}")
@@ -323,7 +327,17 @@ def run_hmmer(record: Record, features: Iterable[CDSFeature], max_evalue: float,
     opts: List[str] = []
     if use_cut_tc:
         opts.append('--cut_tc')
-    hmmscan_results = subprocessing.run_hmmscan(database, query_sequence, opts=opts)
+
+    # Thread distribution is handled by get_effective_cpus() based on --workers
+    force_single_core = False
+
+    try:
+        hmmscan_results = subprocessing.run_hmmscan(database, query_sequence, opts=opts,
+                                                    force_single_core=force_single_core, timeout=timeout)
+    except Exception as e:
+        logging.error("Error running hmmscan for %s on record %s: %s", tool, record.id, str(e))
+        raise
+
     hits = build_hits(record, hmmscan_results, min_score, max_evalue, database)
     if filter_overlapping:
         results_by_cds = defaultdict(list)

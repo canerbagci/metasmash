@@ -12,12 +12,16 @@ from typing import Any, Dict, Iterable, List, Set, Sequence, Tuple
 from antismash.common import fasta, json, path, secmet, subprocessing
 from antismash.common.subprocessing.diamond import check_diamond_files
 
-from antismash.config import get_config
+from antismash.config import ConfigType, get_config
 
 from .data_structures import Subject, Query, ProteinDB, ReferenceCluster, Score
 
 _SHIPPED_DATA_DIR = path.get_full_path(__file__, "data")
 CACHE_FILE = "proteins.json"
+
+# Module-level caches for fork CoW sharing (populated by preload_clusterblast_databases)
+_CLUSTER_CACHE: Dict[str, Dict[str, ReferenceCluster]] = {}
+_PROTEIN_CACHE: Dict[str, ProteinDB] = {}
 
 
 def _extract_protein_from_line(line: str) -> tuple[str, dict[str, Any]]:
@@ -222,6 +226,9 @@ def load_reference_clusters(searchtype: str) -> Dict[str, ReferenceCluster]:
             a dictionary mapping reference cluster name to ReferenceCluster
             instance
     """
+    if searchtype in _CLUSTER_CACHE:
+        return _CLUSTER_CACHE[searchtype]
+
     options = get_config()
 
     if searchtype == "clusterblast":
@@ -237,7 +244,9 @@ def load_reference_clusters(searchtype: str) -> Dict[str, ReferenceCluster]:
         data_dir = os.path.join(kcb_root, version)
 
     reference_cluster_file = os.path.join(data_dir, "clusters.txt")
-    return _load_cluster_data(reference_cluster_file)
+    result = _load_cluster_data(reference_cluster_file)
+    _CLUSTER_CACHE[searchtype] = result
+    return result
 
 
 def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -> ProteinDB:
@@ -251,6 +260,9 @@ def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -
         Returns:
             the built protein description database
     """
+    if searchtype in _PROTEIN_CACHE and cache_path is None:
+        return _PROTEIN_CACHE[searchtype]
+
     options = get_config()
     if searchtype == "clusterblast":
         logging.info("ClusterBlast: Loading gene cluster database proteins into memory...")
@@ -267,7 +279,10 @@ def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -
     if cache_path is None:
         cache_path = os.path.join(data_dir, CACHE_FILE)
 
-    return ProteinDB.from_file(cache_path)
+    proteins = ProteinDB.from_file(cache_path)
+    if cache_path == os.path.join(data_dir, CACHE_FILE):
+        _PROTEIN_CACHE[searchtype] = proteins
+    return proteins
 
 
 def load_clusterblast_database(searchtype: str = "clusterblast"
@@ -287,6 +302,25 @@ def load_clusterblast_database(searchtype: str = "clusterblast"
     proteins = load_reference_proteins(searchtype)
 
     return clusters, proteins
+
+
+def preload_clusterblast_databases(options: ConfigType) -> None:
+    """ Pre-load clusterblast databases into module-level caches for fork CoW sharing.
+
+        Must be called before forking worker processes.
+
+        Arguments:
+            options: antismash config
+    """
+    if options.cb_general:
+        _, proteins = load_clusterblast_database("clusterblast")
+        proteins.warm_cache()
+    if options.cb_subclusters:
+        _, proteins = load_clusterblast_database("subclusterblast")
+        proteins.warm_cache()
+    if options.cb_knownclusters:
+        _, proteins = load_clusterblast_database("knownclusterblast")
+        proteins.warm_cache()
 
 
 def create_blast_inputs(region: secmet.Region) -> Tuple[List[str], List[str]]:

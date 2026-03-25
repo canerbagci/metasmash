@@ -528,6 +528,13 @@ def basic_options() -> _SimpleArgs:
                     type=int,
                     default=multiprocessing.cpu_count(),
                     help="How many CPUs to use in parallel. (default for this machine: %(default)s)")
+    group.add_option('--workers',
+                    dest='workers',
+                    type=int,
+                    default=-1,
+                    help="Number of parallel worker processes. Each worker gets cpus/workers "
+                         "threads. Lower values reduce memory at same CPU utilization. "
+                         "(default: same as --cpus)")
     group.add_option('--databases',
                     dest='database_dir',
                     default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databases'),
@@ -553,6 +560,12 @@ def output_options() -> ModuleArgs:
                      default="",
                      type=str,
                      help="Base filename to use for output files within the output directory.")
+    group.add_option('--output-skip-records-without-regions',
+                     dest='output_skip_records_without_regions',
+                     action=argparse.BooleanOptionalAction,
+                     default=True,
+                     help="Exclude records without detected regions from JSON and GBK output files. "
+                          "Skipped record names are still logged. (default: %(default)s)")
     return group
 
 
@@ -618,6 +631,14 @@ def advanced_options() -> ModuleArgs:
                      action=argparse.BooleanOptionalAction,
                      default=True,
                      help="Should sequence identifiers longer than 16 characters be allowed")
+    group.add_option('--streaming',
+                     dest='streaming',
+                     default='auto',
+                     choices=['auto', 'on', 'off'],
+                     type=str,
+                     help="Streaming record processing mode: 'auto' enables streaming for "
+                          "large inputs (>10 records), 'on' forces streaming, 'off' uses "
+                          "classic pipeline. (default: %(default)s)")
     group.add_option("--remove-existing-annotations",
                      dest="remove_existing_annotations",
                      action=argparse.BooleanOptionalAction,

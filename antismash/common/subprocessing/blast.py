@@ -22,7 +22,7 @@ with warnings.catch_warnings(record=True) as emitted:
     # and it needs to be referring to the "_legacy" section
     assert "Bio.SearchIO._legacy' module for parsing BLAST plain text" in str(emitted[0].message), emitted[0]
 
-from .base import execute, get_config, RunResult, SearchIO
+from .base import execute, get_config, get_effective_cpus, RunResult, SearchIO
 
 NCBI_OVERRIDES = {
     # NCBI tools have added usage reporting, which can add minutes to simple
@@ -52,7 +52,7 @@ def run_blastp(target_blastp_database: str, query_sequence: str,
     config = get_config()
     command = [
         config.executables.blastp,
-        "-num_threads", str(config.cpus),
+        "-num_threads", str(get_effective_cpus()),
         "-db", target_blastp_database,
         "-outfmt", "6",  # use tabular format for biopython's parsing
     ]

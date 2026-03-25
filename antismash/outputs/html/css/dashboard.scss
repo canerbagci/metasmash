@@ -1,0 +1,765 @@
+// Dashboard-specific styles
+
+.dashboard-nav {
+    display: flex;
+    align-items: center;
+    padding: 0.4em 1em;
+    background-color: #f5f5f5;
+    border-bottom: 1px solid #ddd;
+    font-size: 90%;
+
+    .dashboard-nav-item {
+        padding: 0.3em 0.8em;
+        margin-right: 0.5em;
+        border-radius: 3px;
+        color: #555;
+        background: none;
+
+        &:hover {
+            text-decoration: none;
+            background-color: #e0e0e0;
+        }
+    }
+
+    .dashboard-nav-active {
+        background-color: $antismash-main;
+        color: white;
+
+        &:link, &:visited {
+            color: white;
+        }
+        &:hover {
+            background-color: lighten($antismash-main, 10%);
+            color: white;
+        }
+    }
+
+    .dashboard-nav-separator {
+        margin: 0 0.3em;
+        color: #999;
+    }
+}
+
+.dashboard-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1em 1.5em;
+}
+
+.dashboard-title {
+    font-size: 110%;
+    margin-bottom: 1em;
+    color: #333;
+    @include bold;
+}
+
+// Summary cards
+.summary-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8em;
+    margin-bottom: 1.5em;
+}
+
+.stat-card {
+    flex: 1 1 150px;
+    background: linear-gradient(to bottom, #fafafa, #f0f0f0);
+    border: 1px solid #ddd;
+    border-left: 4px solid $antismash-main;
+    border-radius: 4px;
+    padding: 0.8em 1em;
+    text-align: center;
+    min-width: 130px;
+
+    .stat-value {
+        font-size: 160%;
+        @include bold;
+        color: $antismash-main;
+        display: block;
+        line-height: 1.3;
+    }
+
+    .stat-label {
+        font-size: 80%;
+        color: #666;
+        margin-top: 0.2em;
+        display: block;
+    }
+}
+
+// Chart section
+.chart-section {
+    margin-bottom: 1.5em;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 1em;
+}
+
+.chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.8em;
+
+    .chart-title {
+        font-size: 95%;
+        @include bold;
+        color: #333;
+    }
+}
+
+.chart-toggle {
+    font-size: 85%;
+    padding: 0.3em 0.6em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: white;
+    color: #555;
+    cursor: pointer;
+
+    &:hover {
+        background: #f0f0f0;
+    }
+}
+
+.chart-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.chart-filter-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3em;
+    padding-top: 0.8em;
+
+    .regbutton {
+        cursor: pointer;
+        font-size: 80%;
+        border-radius: 0.5em;
+        padding: 0.25em 0.5em;
+        text-align: center;
+        line-height: 1.3em;
+
+        a {
+            background: none;
+            text-decoration: none;
+        }
+    }
+
+    .chart-filter-all {
+        background-color: #e0e0e0;
+        color: #333;
+    }
+
+    .chart-filter-active {
+        outline: 2px solid #333;
+        outline-offset: 1px;
+    }
+}
+
+// BGC table section
+.bgc-table-section {
+    margin-bottom: 1.5em;
+}
+
+.bgc-table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5em;
+
+    .bgc-table-title {
+        font-size: 95%;
+        @include bold;
+        color: #333;
+    }
+}
+
+.bgc-filter-input {
+    font-size: 85%;
+    padding: 0.3em 0.6em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    width: 200px;
+
+    &:focus {
+        outline: none;
+        border-color: $antismash-main;
+    }
+}
+
+table.dashboard-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 85%;
+    table-layout: fixed;
+
+    thead {
+        th {
+            background-color: $antismash-main;
+            color: white;
+            padding: 0.5em 0.6em;
+            text-align: left;
+            cursor: pointer;
+            white-space: nowrap;
+            position: relative;
+            overflow: hidden;
+
+            &:hover {
+                background-color: lighten($antismash-main, 8%);
+            }
+        }
+    }
+
+    tbody {
+        tr {
+            cursor: default;
+            border-bottom: 1px solid #eee;
+
+            &:hover {
+                background-color: #f5f5f5;
+            }
+        }
+
+        tr.even {
+            background-color: #fafafa;
+        }
+
+        td {
+            padding: 0.4em 0.6em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .digits {
+            text-align: right;
+        }
+    }
+}
+
+.taxonomy-cell {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 80%;
+}
+
+// Sort indicators on column headers
+th.sort-asc::after {
+    content: " \25B2";
+    font-size: 70%;
+}
+
+th.sort-desc::after {
+    content: " \25BC";
+    font-size: 70%;
+}
+
+// Pagination controls
+.bgc-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8em;
+    padding: 0.6em 0;
+    font-size: 85%;
+}
+
+.bgc-page-btn {
+    padding: 0.3em 0.8em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: white;
+    cursor: pointer;
+    color: #333;
+
+    &:hover:not(:disabled) {
+        background: #f0f0f0;
+        border-color: #999;
+    }
+
+    &:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+}
+
+.bgc-page-info {
+    color: #555;
+}
+
+.bgc-page-size {
+    font-size: inherit;
+    padding: 0.2em 0.4em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: white;
+    color: #555;
+    cursor: pointer;
+}
+
+// Overview page record section pagination
+.overview-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8em;
+    padding: 0.8em 0;
+    font-size: 85%;
+}
+
+// Column resize handle
+.col-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.3);
+    }
+}
+
+// Custom tooltip for truncated cells
+.dashboard-tooltip {
+    position: absolute;
+    z-index: 1000;
+    max-width: 400px;
+    padding: 0.5em 0.8em;
+    background: linear-gradient(to bottom, #333, #222);
+    color: #fff;
+    font-size: 90%;
+    line-height: 1.4;
+    border-radius: 4px;
+    word-wrap: break-word;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+    &::before {
+        content: "";
+        position: absolute;
+        top: -6px;
+        left: 1em;
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-bottom: 6px solid #333;
+    }
+}
+
+// Chevron navigation column
+.bgc-navigate-header {
+    &:hover {
+        background-color: $antismash-main !important;
+    }
+}
+
+.bgc-navigate-cell {
+    text-align: center;
+    width: 2.5em;
+}
+
+.bgc-navigate-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6em;
+    height: 1.6em;
+    border-radius: 3px;
+    color: #999;
+    text-decoration: none;
+    font-size: 120%;
+    line-height: 1;
+
+    &:hover {
+        background-color: $antismash-main;
+        color: white;
+        text-decoration: none;
+    }
+}
+
+.edge-badge {
+    display: inline-block;
+    font-size: 80%;
+    padding: 0.1em 0.5em;
+    border-radius: 3px;
+    @include bold;
+}
+
+.edge-badge-yes {
+    @extend .edge-badge;
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.edge-badge-no {
+    @extend .edge-badge;
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.similarity-high {
+    background-color: rgb(178, 208, 178);
+}
+
+.similarity-medium {
+    background-color: rgb(251, 214, 192);
+}
+
+.similarity-low {
+    background-color: rgb(249, 178, 178);
+}
+
+.no-bgcs-message {
+    text-align: center;
+    padding: 2em;
+    color: #888;
+    font-size: 110%;
+}
+
+// BGC selection checkbox column
+.bgc-select-cell,
+.bgc-select-header {
+    width: 2em;
+    text-align: center;
+    cursor: pointer;
+
+    input[type="checkbox"] {
+        cursor: pointer;
+    }
+}
+
+.bgc-select-header {
+    &:hover {
+        background-color: $antismash-main !important;
+    }
+}
+
+// Selection action bar
+.bgc-selection-bar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 1em;
+    padding: 0.6em 1em;
+    background-color: $antismash-main;
+    color: white;
+    border-radius: 0 0 4px 4px;
+    font-size: 90%;
+    z-index: 10;
+}
+
+.bgc-view-selected-btn {
+    background: white;
+    color: $antismash-main;
+    border: none;
+    padding: 0.4em 1em;
+    border-radius: 3px;
+    cursor: pointer;
+    @include bold;
+    font-size: inherit;
+
+    &:hover {
+        background: #f0f0f0;
+    }
+}
+
+.bgc-clear-selection-btn {
+    background: transparent;
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    padding: 0.4em 1em;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: inherit;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.15);
+        border-color: white;
+    }
+}
+
+// Filter banner on regions page
+.bgc-filter-banner {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffc107;
+    padding: 0.6em 1em;
+    margin: 0.5em 1em;
+    border-radius: 4px;
+    font-size: 90%;
+
+    a {
+        color: #856404;
+        @include bold;
+        text-decoration: underline;
+    }
+}
+
+// =========================================================================
+//  Advanced filter panel
+// =========================================================================
+.adv-filter-panel {
+    margin-bottom: 1.2em;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.adv-filter-header {
+    display: flex;
+    align-items: center;
+    padding: 0.6em 1em;
+    cursor: pointer;
+    user-select: none;
+    background: #fafafa;
+    border-radius: 4px;
+
+    &:hover {
+        background: #f0f0f0;
+    }
+}
+
+.adv-filter-arrow {
+    display: inline-block;
+    font-size: 75%;
+    margin-right: 0.5em;
+    transition: transform 0.2s;
+    color: #666;
+
+    &.adv-arrow-open {
+        transform: rotate(90deg);
+    }
+}
+
+.adv-filter-label {
+    @include bold;
+    font-size: 90%;
+    color: #333;
+    flex: 1;
+}
+
+.adv-clear-all-btn {
+    font-size: 80%;
+    padding: 0.25em 0.8em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: white;
+    color: #c0392b;
+    cursor: pointer;
+
+    &:hover {
+        background: #fdecea;
+        border-color: #c0392b;
+    }
+}
+
+.adv-filter-body {
+    padding: 0.8em 1em;
+    border-top: 1px solid #eee;
+}
+
+.adv-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1.2em;
+    margin-bottom: 0.8em;
+
+    &:last-child {
+        margin-bottom: 0;
+    }
+}
+
+.adv-row-label {
+    display: block;
+    font-size: 75%;
+    color: #888;
+    margin-bottom: 0.25em;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    @include bold;
+}
+
+
+// Edge toggle
+.adv-edge-toggle {
+    min-width: 180px;
+}
+
+.adv-toggle-group {
+    display: flex;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.adv-toggle-btn {
+    font-size: 80%;
+    padding: 0.3em 0.6em;
+    border: none;
+    background: white;
+    color: #555;
+    cursor: pointer;
+    border-right: 1px solid #ccc;
+    white-space: nowrap;
+
+    &:last-child {
+        border-right: none;
+    }
+
+    &:hover {
+        background: #f0f0f0;
+    }
+
+    &.adv-toggle-active {
+        background: $antismash-main;
+        color: white;
+    }
+}
+
+// Multi-select dropdowns
+.adv-multiselect {
+    flex: 1 1 200px;
+    min-width: 180px;
+    max-width: 320px;
+}
+
+.adv-ms-control {
+    position: relative;
+}
+
+.adv-ms-display {
+    font-size: 85%;
+    padding: 0.35em 0.6em;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background: white;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #555;
+
+    &:focus {
+        outline: none;
+        border-color: $antismash-main;
+    }
+
+    &::after {
+        content: "\25BC";
+        float: right;
+        font-size: 65%;
+        color: #999;
+        margin-left: 0.5em;
+    }
+}
+
+.adv-ms-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: white;
+    border: 1px solid #ccc;
+    border-top: none;
+    border-radius: 0 0 3px 3px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.adv-ms-search {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 85%;
+    padding: 0.35em 0.5em;
+    border: none;
+    border-bottom: 1px solid #eee;
+    outline: none;
+}
+
+.adv-ms-options {
+    padding: 0.2em 0;
+}
+
+.adv-ms-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    padding: 0.25em 0.5em;
+    font-size: 85%;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover {
+        background: #f5f5f5;
+    }
+
+    input[type="checkbox"] {
+        cursor: pointer;
+    }
+}
+
+// Filter chips bar
+.adv-chips-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3em;
+    padding: 0 1em;
+
+    &:empty {
+        display: none;
+    }
+
+    &:not(:empty) {
+        padding-bottom: 0.5em;
+        padding-top: 0.3em;
+    }
+}
+
+.adv-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    font-size: 78%;
+    padding: 0.2em 0.5em;
+    background: lighten($antismash-main, 45%);
+    color: darken($antismash-main, 15%);
+    border: 1px solid lighten($antismash-main, 30%);
+    border-radius: 10px;
+    white-space: nowrap;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.adv-chip-remove {
+    cursor: pointer;
+    font-size: 110%;
+    line-height: 1;
+    opacity: 0.6;
+    margin-left: 0.1em;
+
+    &:hover {
+        opacity: 1;
+    }
+}
+
+// Pagination controls for detailed (regions) view
+.detailed-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8em;
+    padding: 0.5em 1em;
+    margin: 0 1em 0.5em;
+    font-size: 85%;
+}

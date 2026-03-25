@@ -8,7 +8,8 @@ import functools
 import logging
 import os
 import re
-from typing import Any, Dict, Callable, Iterable, List, Set, Tuple
+from contextlib import contextmanager
+from typing import Any, Dict, Callable, Generator, Iterable, Iterator, List, Optional, Set, Tuple
 import warnings
 
 from Bio.Seq import Seq, UndefinedSequenceError
@@ -29,6 +30,25 @@ from .subprocessing import parallel_function
 _INVALID_ID_CHARS = """!"#$%&()*+,:;=>?@[]^`'{|}/ """
 
 
+@contextmanager
+def _strict_parse_warnings() -> Generator[None, None, None]:
+    """ Context manager that sets up warning filters to catch biopython
+        parsing warnings as errors, then removes them on exit.
+    """
+    filter_messages = [
+        r".*invalid location.*",
+        r".*Expected sequence length.*",
+        r".*Couldn't parse feature location.*",
+        r".*double-quote characters.*should be escaped.*",
+    ]
+    for message in filter_messages:
+        warnings.filterwarnings("error", message=message)
+    try:
+        yield
+    finally:
+        warnings.filters = warnings.filters[len(filter_messages):]
+
+
 def _strict_parse(filename: str) -> List[SeqRecord]:
     """ Parses the input record with extra wrappers to catch biopython warnings
         as errors.
@@ -39,17 +59,11 @@ def _strict_parse(filename: str) -> List[SeqRecord]:
         Returns:
             a list of SeqRecords parsed
     """
-    filter_messages = [
-        r".*invalid location.*",
-        r".*Expected sequence length.*",
-        r".*Couldn't parse feature location.*",
-        r".*double-quote characters.*should be escaped.*",
-    ]
     try:
-        # prepend warning filters to raise exceptions on certain messages
-        for message in filter_messages:
-            warnings.filterwarnings("error", message=message)
-        records = list(seqio.parse(filename))
+        with _strict_parse_warnings():
+            records = list(seqio.parse(filename))
+    except AntismashInputError:
+        raise
     except Exception as err:
         message = str(err)
         # strip the "Ignoring" part, since it's not being ignored
@@ -59,9 +73,6 @@ def _strict_parse(filename: str) -> List[SeqRecord]:
             message = f"error within parsing library: {message}"
         logging.error('Parsing %r failed: %s', filename, message)
         raise AntismashInputError(message) from err
-    finally:
-        # remove the new warning filters (functions in at least 3.5 and 3.6)
-        warnings.filters = warnings.filters[len(filter_messages):]
 
     if not records:
         raise AntismashInputError(f"no valid records found in file {filename}")
@@ -532,20 +543,20 @@ def records_contain_shotgun_scaffolds(records: List[Record]) -> bool:
     return False
 
 
-def fix_record_name_id(record: Record, all_record_ids: Set[str],
-                       allow_long_names: bool = False) -> None:
-    """ Changes a record's name and id to be no more than 16 characters long,
-        so it can be used in GenBank files.
-
-        If record name is too long, the prefix c000X is used
+def _fix_name_id_impl(record: Any, record_index: int,
+                      all_record_ids: Set[str],
+                      allow_long_names: bool,
+                      get_original_id: Callable[[Any], Optional[str]],
+                      set_original_id: Callable[[Any, str], None]) -> None:
+    """ Shared implementation for fixing record name/id to <= 16 characters.
 
         Arguments:
-            record: the record to alter
+            record: the record to alter (secmet Record or BioPython SeqRecord)
+            record_index: the 1-based index of this record
             all_record_ids: a set of all known record ids
             allow_long_names: whether names longer than 16 characters are allowed
-
-        Returns:
-            None
+            get_original_id: callable to retrieve the original_id from the record
+            set_original_id: callable to set the original_id on the record
     """
 
     def _shorten_ids(idstring: str) -> str:
@@ -560,8 +571,7 @@ def fix_record_name_id(record: Record, all_record_ids: Set[str],
             contig_no = int(contigstrmatch.group(1))
         else:
             # if the contig number cannot be parsed out, just count the contigs from 1 to n
-            assert isinstance(record.record_index, int)
-            contig_no = record.record_index
+            contig_no = record_index
 
         return f"c{contig_no:05d}_{idstring[:7]}.."
 
@@ -592,11 +602,33 @@ def fix_record_name_id(record: Record, all_record_ids: Set[str],
     if 'accession' in record.annotations and \
        len(record.annotations['accession']) > 16:
         acc = record.annotations['accession']
-
         record.annotations['accession'] = _shorten_ids(acc)
 
-    if not record.original_id and old_id != record.id:
-        record.original_id = old_id
+    if not get_original_id(record) and old_id != record.id:
+        set_original_id(record, old_id)
+
+
+def fix_record_name_id(record: Record, all_record_ids: Set[str],
+                       allow_long_names: bool = False) -> None:
+    """ Changes a record's name and id to be no more than 16 characters long,
+        so it can be used in GenBank files.
+
+        If record name is too long, the prefix c000X is used
+
+        Arguments:
+            record: the record to alter
+            all_record_ids: a set of all known record ids
+            allow_long_names: whether names longer than 16 characters are allowed
+
+        Returns:
+            None
+    """
+    assert isinstance(record.record_index, int)
+    _fix_name_id_impl(
+        record, record.record_index, all_record_ids, allow_long_names,
+        get_original_id=lambda r: r.original_id,
+        set_original_id=lambda r, v: setattr(r, 'original_id', v),
+    )
 
 
 def generate_unique_id(prefix: str, existing_ids: Set[str], start: int = 0,
@@ -618,7 +650,6 @@ def generate_unique_id(prefix: str, existing_ids: Set[str], start: int = 0,
 
     """
     counter = int(start)
-    existing_ids = set(existing_ids)
     max_length = int(max_length)
 
     name = f"{prefix}_{counter}"
@@ -628,3 +659,241 @@ def generate_unique_id(prefix: str, existing_ids: Set[str], start: int = 0,
     if 0 < max_length < len(name):
         raise RuntimeError(f"Could not generate unique id for {prefix} after {counter - start} iterations")
     return name, counter
+
+
+def scan_record_metadata(filename: str, minimum_length: int = -1,
+                         ignore_invalid_records: bool = False,
+                         ) -> List[Tuple[str, int]]:
+    """ First pass over an input file: stream through all records collecting
+        only (record_id, sequence_length) pairs.  No sequence data is retained,
+        keeping memory at ~60 bytes per record instead of ~2KB+ for full
+        SeqRecords.
+
+        Arguments:
+            filename: the path of the file to read
+            minimum_length: records shorter than this are excluded
+                            (if not positive, all records are included)
+            ignore_invalid_records: if True, skip invalid records with a
+                                    warning instead of raising an error
+
+        Returns:
+            a list of (record_id, sequence_length) tuples
+    """
+    logging.info("Scanning record metadata from %r", filename)
+    max_id_len = os.pathconf("/", "PC_NAME_MAX") - len(".region000.gbk")
+    metadata: List[Tuple[str, int]] = []
+    found_any = False
+
+    try:
+        with _strict_parse_warnings():
+            for record in seqio.parse(filename):
+                found_any = True
+
+                # validation: ID length
+                if len(record.id) > max_id_len:
+                    if ignore_invalid_records:
+                        logging.warning("Skipping record with identifier too long: %s", record.id)
+                        continue
+                    raise AntismashInputError(
+                        f"record identifier too long for file system: {record.id}")
+
+                # validation: shotgun scaffolds
+                if records_contain_shotgun_scaffolds([record]):
+                    if ignore_invalid_records:
+                        logging.warning("Skipping incomplete WGS record: %s", record.id)
+                        continue
+                    raise AntismashInputError(
+                        "incomplete whole genome shotgun records are not supported")
+
+                # validation: has sequence
+                try:
+                    record.seq[0]
+                except (IndexError, UndefinedSequenceError):
+                    if ignore_invalid_records:
+                        logging.warning("Skipping record with no sequence: %s", record.id)
+                        continue
+                    raise AntismashInputError(
+                        f"record contains no sequence information: {record.id}")
+
+                # validation: nucleotide
+                if not Record.is_nucleotide_sequence(record.seq):
+                    if ignore_invalid_records:
+                        logging.warning("Skipping protein record: %s", record.id)
+                        continue
+                    raise AntismashInputError(
+                        f"protein records are not supported: {record.id}")
+
+                seq_len = len(record.seq)
+                if minimum_length < 1 or seq_len >= minimum_length:
+                    metadata.append((record.id, seq_len))
+    except AntismashInputError:
+        raise
+    except Exception as err:
+        message = str(err)
+        if message.startswith("Ignoring invalid location"):
+            message = message[9:]
+        if isinstance(err, AttributeError):
+            message = f"error within parsing library: {message}"
+        logging.error('Parsing %r failed: %s', filename, message)
+        raise AntismashInputError(message) from err
+
+    if not found_any:
+        raise AntismashInputError(f"no valid records found in file {filename}")
+    if not metadata:
+        raise AntismashInputError(
+            f"all input records smaller than minimum length ({minimum_length})")
+
+    logging.info("Scanned %d accepted records from %r", len(metadata), filename)
+    return metadata
+
+
+def _strip_id(value: str) -> str:
+    """ Strip invalid characters from a record ID string. """
+    return "".join(v for v in value if v not in _INVALID_ID_CHARS)
+
+
+def resolve_record_ids(
+        metadata: List[Tuple[str, int]],
+        options: ConfigType,
+) -> Tuple[Dict[str, Tuple[str, int]], int]:
+    """ Apply all ID-resolution logic on lightweight metadata tuples.
+
+        Handles: strip invalid chars, ID dedup, ID shortening (>16 chars),
+        --limit_to_record, --minlength (re-applied after ID
+        changes), --limit (sort by length, pick top N).
+
+        Arguments:
+            metadata: list of (original_id, seq_length) from scan_record_metadata
+            options: antismash config
+
+        Returns:
+            a tuple of:
+              - dict mapping stripped_original_id -> (resolved_id, record_index)
+                for accepted records
+              - total number of accepted records
+    """
+    checking_required = not (options.reuse_results or options.skip_sanitisation)
+
+    # assign 1-based indices and strip IDs
+    entries: List[Tuple[str, str, int, int]] = []  # (original, stripped, length, index)
+    for i, (orig_id, length) in enumerate(metadata):
+        stripped = _strip_id(orig_id) if checking_required else orig_id
+        entries.append((orig_id, stripped, length, i + 1))
+
+    # dedup IDs
+    all_ids: Set[str] = set()
+    resolved: List[Tuple[str, str, int, int]] = []  # (original, resolved_id, length, index)
+
+    if checking_required:
+        seen_ids = {stripped for _, stripped, _, _ in entries}
+        needs_dedup = len(seen_ids) < len(entries)
+        all_ids = set()
+
+        for orig, stripped, length, idx in entries:
+            resolved_id = stripped
+            if needs_dedup and stripped in all_ids:
+                resolved_id = generate_unique_id(stripped, all_ids)[0]
+            all_ids.add(resolved_id)
+            resolved.append((orig, resolved_id, length, idx))
+
+        # shorten IDs > 16 chars
+        if not options.allow_long_headers:
+            for i, (orig, res_id, length, idx) in enumerate(resolved):
+                if len(res_id) > 16:
+                    # try RefSeq-style version trimming
+                    if (res_id[-2] == "." and res_id.count(".") == 1
+                            and len(res_id.partition(".")[0]) <= 16
+                            and res_id.partition(".")[0] not in all_ids):
+                        new_id = res_id.partition(".")[0]
+                    else:
+                        new_id, _ = generate_unique_id(res_id[:12], all_ids, max_length=16)
+                    all_ids.discard(res_id)
+                    all_ids.add(new_id)
+                    resolved[i] = (orig, new_id, length, idx)
+    else:
+        for orig, stripped, length, idx in entries:
+            all_ids.add(stripped)
+            resolved.append((orig, stripped, length, idx))
+
+    # apply --limit_to_record
+    if options.limit_to_record:
+        matching = [(o, r, l, i) for o, r, l, i in resolved if r == options.limit_to_record]
+        if not matching:
+            raise AntismashInputError(f"no sequences matched filter: {options.limit_to_record}")
+        logging.info("Skipped %d sequences not matching filter: %s",
+                     len(resolved) - len(matching), options.limit_to_record)
+        resolved = matching
+
+    # re-apply --minlength (IDs may have changed but lengths haven't)
+    resolved = [(o, r, l, i) for o, r, l, i in resolved if l >= options.minlength]
+    if not resolved:
+        raise AntismashInputError("all records skipped after filtering")
+
+    # apply --limit
+    if options.limit != -1 and options.limit < len(resolved):
+        logging.warning("Only analysing the first %d records (increase via --limit)", options.limit)
+        resolved = sorted(resolved, key=lambda x: (-x[2], x[3]))[:options.limit]
+        update_config({"triggered_limit": True})
+    else:
+        update_config({"triggered_limit": False})
+
+    # build lookup: stripped_original_id -> (resolved_id, record_index)
+    accepted: Dict[str, Tuple[str, int]] = {}
+    for orig, res_id, _length, idx in resolved:
+        stripped_orig = _strip_id(orig) if checking_required else orig
+        accepted[stripped_orig] = (res_id, idx)
+
+    return accepted, len(resolved)
+
+
+def iter_accepted_records(
+        filename: str,
+        accepted_ids: Dict[str, Tuple[str, int]],
+) -> Iterator[Tuple[SeqRecord, int]]:
+    """ Second pass over the input file: stream records and yield only those
+        whose (stripped) ID is in accepted_ids.
+
+        For each accepted record, the resolved ID and record_index are applied
+        before yielding.  Only one SeqRecord is alive at a time in the caller's
+        scope (the previous one can be GC'd).
+
+        Arguments:
+            filename: the path of the file to read
+            accepted_ids: dict from resolve_record_ids mapping
+                          stripped_original_id -> (resolved_id, record_index)
+
+        Yields:
+            (SeqRecord, record_index) tuples for accepted records
+    """
+    logging.info("Second pass: streaming accepted records from %r", filename)
+
+    try:
+        with _strict_parse_warnings():
+            for record in seqio.parse(filename):
+                stripped = _strip_id(record.id)
+                if stripped not in accepted_ids:
+                    continue
+
+                resolved_id, record_index = accepted_ids[stripped]
+
+                # apply resolved ID
+                if resolved_id != record.id:
+                    if not getattr(record, 'original_id', None):
+                        record.original_id = record.id  # type: ignore[attr-defined]
+                    record.id = resolved_id
+                    record.name = _strip_id(record.name)
+
+                # store record_index on the SeqRecord for downstream use
+                record.record_index = record_index  # type: ignore[attr-defined]
+
+                yield record, record_index
+    except AntismashInputError:
+        raise
+    except Exception as err:
+        message = str(err)
+        if message.startswith("Ignoring invalid location"):
+            message = message[9:]
+        if isinstance(err, AttributeError):
+            message = f"error within parsing library: {message}"
+        logging.error('Parsing %r failed: %s', filename, message)
+        raise AntismashInputError(message) from err

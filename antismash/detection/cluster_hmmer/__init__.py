@@ -103,11 +103,16 @@ def run_on_record(record: Record, results: Optional[hmmer.HmmerResults],
         # same version requested, so reuse the results
         if database_version == previous_db:
             return results
-        logging.debug("Replacing clusterhmmer results from %s with %s",
-                      previous_db, database_version)
+        logging.debug("Replacing clusterhmmer results from %s with %s for record %s",
+                      previous_db, database_version, record.id)
 
-    logging.info('Running cluster PFAM search')
+    logging.info('Running cluster PFAM search for record %s', record.id)
 
     features = record.get_cds_features_within_regions()
     database = os.path.join(options.database_dir, 'pfam', database_version, 'Pfam-A.hmm')
-    return hmmer.run_hmmer(record, features, MAX_EVALUE, MIN_SCORE, database, "clusterhmmer")
+
+    try:
+        return hmmer.run_hmmer(record, features, MAX_EVALUE, MIN_SCORE, database, "clusterhmmer")
+    except Exception as e:
+        logging.error("Error running clusterhmmer for record %s: %s", record.id, str(e))
+        raise

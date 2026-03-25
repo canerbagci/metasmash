@@ -31,6 +31,9 @@ from antismash.common.secmet.locations import (
 
 PWM_PATH = path.get_full_path(__file__, 'data', 'PWMs.json')
 
+# Module-level cache for fork CoW sharing (populated by preload_matrices)
+_MATRICES_CACHE: Dict[str, List["Matrix"]] = {}
+
 
 class Confidence(IntEnum):
     """ Defined and sortable values for confidence terms """
@@ -297,13 +300,22 @@ def load_matrices(pwm_file: str) -> List[Matrix]:
         Returns:
             a list of Matrix instances, one for each matrix in the file
     """
+    if pwm_file in _MATRICES_CACHE:
+        return _MATRICES_CACHE[pwm_file]
+
     matrices = []
     with open(pwm_file, "r", encoding="utf-8") as file:
         regulators = jsonlib.load(file)
         for reg_id, reg_info in regulators.items():
             reg_info["min_score"] = reg_info.get("min_score", 0)
             matrices.append(Matrix(reg_id, **reg_info))
+    _MATRICES_CACHE[pwm_file] = matrices
     return matrices
+
+
+def preload_matrices() -> None:
+    """ Pre-load PWM matrices into module-level cache for fork CoW sharing. """
+    load_matrices(PWM_PATH)
 
 
 def run_moods(sequence: Seq, background: Tuple[float, float, float, float],

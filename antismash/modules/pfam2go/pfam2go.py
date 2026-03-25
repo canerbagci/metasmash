@@ -16,6 +16,9 @@ from antismash.common.secmet.record import Record
 
 DATA_FILE = path.get_full_path(__file__, 'data', 'pfam2go.txt')
 
+# Module-level cache for fork CoW sharing (populated by preload_pfam2go_mapping)
+_MAPPING_CACHE: Dict[str, "GeneOntologies"] = {}
+
 
 class GeneOntology:  # pylint: disable=too-few-public-methods
     """A single Gene Ontology term; holds Gene Ontology ID and its human-readable description."""
@@ -127,6 +130,9 @@ def construct_mapping(mapfile: str) -> Dict[str, GeneOntologies]:
         A dictionary mapping a Pfam ID to a GeneOntologies object containing GeneOntology representations of all GO
         terms matched to this ID.
     """
+    if mapfile in _MAPPING_CACHE:
+        return _MAPPING_CACHE[mapfile]
+
     results = {}
     gene_ontology_per_pfam: Dict[str, List[GeneOntology]] = defaultdict(list)
     with open(path.get_full_path(__file__, mapfile), "r", encoding="utf-8") as pfam_map:
@@ -144,7 +150,13 @@ def construct_mapping(mapfile: str) -> Dict[str, GeneOntologies]:
             gene_ontology_per_pfam[pfam_id].append(GeneOntology(go_id, go_readable))
     for pfam, ontology_list in gene_ontology_per_pfam.items():
         results[pfam] = GeneOntologies(pfam, ontology_list)
+    _MAPPING_CACHE[mapfile] = results
     return results
+
+
+def preload_pfam2go_mapping() -> None:
+    """ Pre-load Pfam2GO mapping into module-level cache for fork CoW sharing. """
+    construct_mapping(DATA_FILE)
 
 
 def get_gos_for_pfams(record: Record) -> Dict[PFAMDomain, List[GeneOntologies]]:

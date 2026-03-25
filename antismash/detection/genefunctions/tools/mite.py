@@ -5,6 +5,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass
+import logging
 import pathlib
 import tempfile
 from typing import Any, Iterable, Optional, Self
@@ -175,8 +176,11 @@ def check_prereqs(options: ConfigType) -> list[str]:
 
 
 def _get_blast_hits(cds_features: Iterable[CDSFeature], dataset: Dataset) -> list[diamond.Hit]:
+    cds_list = list(cds_features)
+    logging.debug("MITE: running diamond blastp for %d CDS features against %s",
+                  len(cds_list), dataset.database_path)
     with tempfile.NamedTemporaryFile() as query_file:
-        query_file.write(fasta.get_fasta_from_features(cds_features).encode())
+        query_file.write(fasta.get_fasta_from_features(cds_list).encode())
         query_file.flush()
         raw = diamond.run_diamond_search(query_file.name, dataset.database_path, opts=[
             "--id", str(MINIMUM_IDENTITY),

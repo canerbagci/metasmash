@@ -7,7 +7,7 @@
 from io import StringIO
 from typing import List
 
-from .base import execute, get_config, SearchIO
+from .base import execute, get_config, get_effective_cpus, SearchIO
 
 
 def _find_error(output: list[str]) -> str:
@@ -28,7 +28,8 @@ def _find_error(output: list[str]) -> str:
 
 
 def run_hmmscan(target_hmmfile: str, query_sequence: str, opts: List[str] = None,
-                results_file: str = None) -> list[SearchIO._model.query.QueryResult]:
+                results_file: str = None, force_single_core: bool = False,
+                timeout: int = None) -> list[SearchIO._model.query.QueryResult]:
     """ Runs hmmscan on the inputs and return a list of QueryResults
 
         Arguments:
@@ -36,6 +37,8 @@ def run_hmmscan(target_hmmfile: str, query_sequence: str, opts: List[str] = None
             query_sequence: a string containing input sequences in fasta format
             opts: a list of extra arguments to pass to hmmscan, or None
             results_file: a path to keep a copy of hmmscan results in, if provided
+            force_single_core: if True, only use 1 CPU core regardless of config
+            timeout: maximum time in seconds to wait for hmmscan to complete (default: None)
 
         Returns:
             a list of QueryResults as parsed from hmmscan output by SearchIO
@@ -45,16 +48,24 @@ def run_hmmscan(target_hmmfile: str, query_sequence: str, opts: List[str] = None
         raise ValueError("Cannot run hmmscan on empty sequence")
 
     config = get_config()
-    command = [config.executables.hmmscan, "--cpu", str(config.cpus), "--nobias"]
 
-    # Only run multithreaded when the binary supports it
-    if " --cpu " not in run_hmmscan_help():
+    # Check if the binary supports multithreading
+    supports_multithreading = " --cpu " in run_hmmscan_help()
+
+    # Use only 1 core if force_single_core is True, or if inside a parallel worker
+    cpu_count = 1 if force_single_core else get_effective_cpus()
+
+    command = [config.executables.hmmscan, "--cpu", str(cpu_count), "--nobias"]
+
+    # Remove CPU flag if multithreading is not supported
+    if not supports_multithreading:
         command = command[0:1] + command[3:]
 
     if opts is not None:
         command.extend(opts)
     command.extend([target_hmmfile, '-'])
-    result = execute(command, stdin=query_sequence)
+
+    result = execute(command, stdin=query_sequence, timeout=timeout)
     if not result.successful():
         raise RuntimeError("".join([
             f"hmmscan returned {result.return_code}: ",

@@ -60,33 +60,39 @@ class AntismashResults:
         """ Regenerates an instance of AntismashResults from JSON representation
             in a file
         """
+        opened_here = False
         if isinstance(handle, str):
             _, ext = os.path.splitext(handle)
             if ext == ".bz2":
                 handle = bz2.open(handle, "rt", encoding="utf-8")
             else:
-                handle = open(handle, "r", encoding="utf-8")  # pylint: disable=consider-using-with
+                handle = open(handle, "r", encoding="utf-8")
+            opened_here = True
         try:
-            data = json.loads(handle.read())
-        except json.JSONDecodeError:
-            raise ValueError(f"Cannot load results to reuse from {handle.name}, "
-                             "is it an antiSMASH result JSON file?")
-        schema = data.get("schema", 1)
-        current = AntismashResults.SCHEMA_VERSION
-        if schema != current and schema not in AntismashResults.COMPATIBLE_SCHEMAS[current]:
-            raise ValueError(
-                f"schema mismatch in previous results: expected {AntismashResults.SCHEMA_VERSION}"
-                f", found {data.get('schema')}"
-            )
-        version = data["version"]
-        input_file = data["input_file"]
-        taxon = data.get("taxon", "bacteria")
-        records = [record_from_json(rec, taxon) for rec in data["records"]]
-        for record, rec_json in zip(records, data["records"]):
-            if "original_id" in rec_json:
-                record.original_id = rec_json["original_id"]
-        results = [rec["modules"] for rec in data["records"]]
-        return AntismashResults(input_file, records, results, version, taxon=taxon)
+            try:
+                data = json.loads(handle.read())
+            except json.JSONDecodeError:
+                raise ValueError(f"Cannot load results to reuse from {handle.name}, "
+                                 "is it an antiSMASH result JSON file?")
+            schema = data.get("schema", 1)
+            current = AntismashResults.SCHEMA_VERSION
+            if schema != current and schema not in AntismashResults.COMPATIBLE_SCHEMAS[current]:
+                raise ValueError(
+                    f"schema mismatch in previous results: expected {AntismashResults.SCHEMA_VERSION}"
+                    f", found {data.get('schema')}"
+                )
+            version = data["version"]
+            input_file = data["input_file"]
+            taxon = data.get("taxon", "bacteria")
+            records = [record_from_json(rec, taxon) for rec in data["records"]]
+            for record, rec_json in zip(records, data["records"]):
+                if "original_id" in rec_json:
+                    record.original_id = rec_json["original_id"]
+            results = [rec["modules"] for rec in data["records"]]
+            return AntismashResults(input_file, records, results, version, taxon=taxon)
+        finally:
+            if opened_here:
+                handle.close()
 
     def to_json(self) -> Dict[str, Any]:
         """ Constructs a JSON representation of the instance """
@@ -102,6 +108,9 @@ class AntismashResults:
     def write_to_file(self, handle: Union[str, IO]) -> None:
         """ Writes a JSON representation of the instance to the given filename
             or handle
+
+            Arguments:
+                handle: the filename or file-like object to write to
         """
         # do the JSON conversions before overwriting the previous file
         try:
@@ -110,13 +119,20 @@ class AntismashResults:
             message = f"Failed to convert JSON results: {error}"
             logging.error(message)
             raise TypeError(message) from error
+        opened_here = False
         if isinstance(handle, str):
-            handle = open(handle, "w", encoding="utf-8")  # pylint: disable=consider-using-with
-        handle.write(converted)
+            handle = open(handle, "w", encoding="utf-8")
+            opened_here = True
+        try:
+            handle.write(converted)
+        finally:
+            if opened_here:
+                handle.close()
 
 
 def dump_records(results: List[Dict[str, Union[Dict[str, Any], ModuleResults]]],
-                 secmet_records: List[Record], handle: Union[str, IO] = None) -> List[Dict[str, Any]]:
+                 secmet_records: List[Record], handle: Union[str, IO] = None,
+                 ) -> List[Dict[str, Any]]:
     """ Converts a list of records and a list of results to a JSON object.
 
         Arguments:
@@ -163,9 +179,15 @@ def dump_records(results: List[Dict[str, Union[Dict[str, Any], ModuleResults]]],
     except TypeError:
         logging.error("Error converting json data: %s", data)
         raise
+    opened_here = False
     if isinstance(handle, str):
-        handle = open(handle, "w", encoding="utf-8")  # pylint: disable=consider-using-with
-    handle.write(new_contents)
+        handle = open(handle, "w", encoding="utf-8")
+        opened_here = True
+    try:
+        handle.write(new_contents)
+    finally:
+        if opened_here:
+            handle.close()
     return data
 
 
@@ -312,3 +334,83 @@ def feature_from_json(data: Union[str, Dict]) -> SeqFeature:
     return SeqFeature(location=location_from_string(data["location"]),
                       type=data["type"],
                       qualifiers=data["qualifiers"])
+
+
+class StreamingJsonWriter:
+    """ Writes antiSMASH JSON output incrementally, one record at a time.
+
+        Instead of building the entire result dict in memory, this class
+        streams records to a file handle as they are processed.  Only one
+        record's JSON representation needs to be in memory at any time.
+
+        Usage::
+            with open("output.json", "w") as fh:
+                writer = StreamingJsonWriter(fh, "input.fasta", "8.dev", "bacteria")
+                for record, mod_results in process():
+                    writer.write_record(record, mod_results)
+                writer.finalize(timings_dict)
+    """
+
+    def __init__(self, handle: IO, input_file: str, version: str,
+                 taxon: str = "bacteria") -> None:
+        self._handle = handle
+        self._record_count = 0
+        # write the opening structure
+        header: Dict[str, Any] = OrderedDict()
+        header["version"] = version
+        header["input_file"] = input_file
+        # We write the header fields individually so we can stream records
+        self._handle.write('{"version": ')
+        self._handle.write(json.dumps(version))
+        self._handle.write(', "input_file": ')
+        self._handle.write(json.dumps(input_file))
+        self._handle.write(', "records": [')
+        self._taxon = taxon
+
+    def write_record(self, record: Record,
+                     mod_results: Dict[str, Union[ModuleResults, Dict[str, Any]]],
+                     ) -> None:
+        """ Serialize and write a single record to the output stream.
+
+            Arguments:
+                record: the secmet Record to serialize
+                mod_results: the module results dict for this record
+        """
+        if self._record_count > 0:
+            self._handle.write(", ")
+
+        bio_record = record.to_biopython()
+        json_record = record_to_json(bio_record)
+        json_record["areas"] = gather_record_areas(record)
+        if record.original_id:
+            json_record["original_id"] = record.original_id
+        json_record["gc_content"] = record.get_gc_content()
+
+        modules: Dict[str, Dict] = OrderedDict()
+        for module, m_results in mod_results.items():
+            if m_results is None:
+                continue
+            if isinstance(m_results, ModuleResults):
+                modules[module] = m_results.to_json()
+            else:
+                raise TypeError(
+                    f"Module results for module {module} are of invalid type: {type(m_results)}")
+        json_record["modules"] = modules
+
+        self._handle.write(json.dumps(json_record))
+        self._record_count += 1
+
+    def finalize(self, timings: Dict[str, Dict[str, float]] = None) -> None:
+        """ Close the JSON structure with timings, taxon, and schema version.
+
+            Arguments:
+                timings: optional per-record timing dict
+        """
+        self._handle.write('], "timings": ')
+        self._handle.write(json.dumps(timings or {}))
+        self._handle.write(', "taxon": ')
+        self._handle.write(json.dumps(self._taxon))
+        self._handle.write(', "schema": ')
+        self._handle.write(json.dumps(AntismashResults.SCHEMA_VERSION))
+        self._handle.write("}")
+        self._handle.flush()

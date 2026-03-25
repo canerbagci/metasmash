@@ -20,6 +20,9 @@ import pstats
 import shutil
 import time
 import tempfile
+import copy
+import gc
+import traceback
 from typing import cast, Any, Dict, List, Optional, Tuple, Union
 
 from Bio import SeqIO
@@ -186,52 +189,56 @@ def run_detection(record: Record, options: ConfigType,
     """
     timings: Dict[str, float] = {}
 
-    # run full genome detections
-    for module in _DETECTION_MODULES[DetectionStage.FULL_GENOME]:
-        run_module(record, module, options, module_results, timings)
-        results = module_results.get(module.__name__)
-        if results:
-            assert isinstance(results, ModuleResults)
-            logging.debug("Adding detection results from %s to record", module.__name__)
-            results.add_to_record(record)
+    try:
+        # run full genome detections
+        for module in _DETECTION_MODULES[DetectionStage.FULL_GENOME]:
+            run_module(record, module, options, module_results, timings)
+            results = module_results.get(module.__name__)
+            if results:
+                assert isinstance(results, ModuleResults)
+                logging.debug("Adding detection results from %s to record %s", module.__name__, record.id)
+                results.add_to_record(record)
 
-    # generate cluster predictions
-    logging.info("Detecting secondary metabolite clusters")
-    modules = list(_DETECTION_MODULES[DetectionStage.AREA_FORMATION])
-    modules.extend(_DETECTION_MODULES[DetectionStage.AREA_REFINEMENT])
-    for module in modules:
-        run_module(record, module, options, module_results, timings)
-        results = module_results.get(module.__name__)
-        if results:
-            assert isinstance(results, DetectionResults), f"{module.__name__}, {type(results)}"
-            for protocluster in results.get_predicted_protoclusters():
-                record.add_protocluster(protocluster)
-            for region in results.get_predicted_subregions():
-                record.add_subregion(region)
+        # generate cluster predictions
+        logging.info("Detecting secondary metabolite clusters for record %s", record.id)
+        modules = list(_DETECTION_MODULES[DetectionStage.AREA_FORMATION])
+        modules.extend(_DETECTION_MODULES[DetectionStage.AREA_REFINEMENT])
+        for module in modules:
+            run_module(record, module, options, module_results, timings)
+            results = module_results.get(module.__name__)
+            if results:
+                assert isinstance(results, DetectionResults), f"{module.__name__}, {type(results)}"
+                for protocluster in results.get_predicted_protoclusters():
+                    record.add_protocluster(protocluster)
+                for region in results.get_predicted_subregions():
+                    record.add_subregion(region)
 
-    logging.debug("%d protoclusters found", len(record.get_protoclusters()))
-    logging.debug("%d subregions found", len(record.get_subregions()))
+        logging.debug("%d protoclusters found in record %s", len(record.get_protoclusters()), record.id)
+        logging.debug("%d subregions found in record %s", len(record.get_subregions()), record.id)
 
-    record.create_candidate_clusters()
-    record.create_regions()
+        record.create_candidate_clusters()
+        record.create_regions()
 
-    if not record.get_regions():
-        logging.info("No regions detected, skipping record")
-        record.skip = "No regions detected"
+        if not record.get_regions():
+            logging.info("No regions detected, skipping record %s", record.id)
+            record.skip = "No regions detected"
+            return timings
+
+        logging.info("%d region(s) detected in record %s", len(record.get_regions()), record.id)
+
+        # finally, run any detection limited to genes in clusters
+        for module in _DETECTION_MODULES[DetectionStage.PER_AREA]:
+            run_module(record, module, options, module_results, timings)
+            results = module_results.get(module.__name__)
+            if results:
+                assert isinstance(results, ModuleResults)
+                logging.debug("Adding detection results from %s to record %s", module.__name__, record.id)
+                results.add_to_record(record)
+
         return timings
-
-    logging.info("%d region(s) detected in record", len(record.get_regions()))
-
-    # finally, run any detection limited to genes in clusters
-    for module in _DETECTION_MODULES[DetectionStage.PER_AREA]:
-        run_module(record, module, options, module_results, timings)
-        results = module_results.get(module.__name__)
-        if results:
-            assert isinstance(results, ModuleResults)
-            logging.debug("Adding detection results from %s to record", module.__name__)
-            results.add_to_record(record)
-
-    return timings
+    except Exception as e:
+        logging.error("Detection failed for record %s: %s", record.id, str(e))
+        raise
 
 
 def run_module(record: Record, module: AntismashModule, options: ConfigType,
@@ -261,7 +268,8 @@ def run_module(record: Record, module: AntismashModule, options: ConfigType,
         results = module.regenerate_previous_results(previous_results, record, options)
         if results:
             module_results[module.__name__] = results
-    if module not in options.all_enabled_modules:
+    # Check if all_enabled_modules exists in options (it won't in picklable options for workers)
+    if hasattr(options, 'all_enabled_modules') and module not in options.all_enabled_modules:
         return
     assert results is None or isinstance(results, ModuleResults)
 
@@ -269,10 +277,14 @@ def run_module(record: Record, module: AntismashModule, options: ConfigType,
     if not module.is_enabled(options):
         return
 
-    logging.info("Running %s", module.__name__)
+    logging.info("Running %s on record %s", module.__name__, record.id)
 
     start = time.time()
-    results = module.run_on_record(record, results, options)
+    try:
+        results = module.run_on_record(record, results, options)
+    except Exception as e:
+        logging.error("Error running %s on record %s: %s", module.__name__, record.id, str(e))
+        raise
     duration = time.time() - start
 
     assert isinstance(results, ModuleResults), f"{module.__name__} returned {type(results)}"
@@ -298,10 +310,14 @@ def analyse_record(record: Record, options: ConfigType, modules: List[AntismashM
             a dictionary mapping module name to time taken
     """
     timings: Dict[str, float] = {}
-    # try to run the given modules over the record
-    for module in modules:
-        run_module(record, module, options, previous_result, timings)
-    return timings
+    try:
+        # try to run the given modules over the record
+        for module in modules:
+            run_module(record, module, options, previous_result, timings)
+        return timings
+    except Exception as e:
+        logging.error("Analysis failed for record %s: %s", record.id, str(e))
+        raise
 
 
 def prepare_output_directory(name: str, input_file: str) -> None:
@@ -406,7 +422,11 @@ def add_antismash_comments(records: List[Tuple[Record, SeqRecord]], options: Con
     if options.start != -1 or options.end != -1:
         start = 1 if options.start == -1 else options.start
         # start/end is only valid for single records, as per record_processing
-        assert len(records) == 1
+        if len(records) != 1:
+            raise ValueError(
+                "--start/--end options are only valid with a single input record, "
+                f"but {len(records)} records were found"
+            )
         end = len(records[0][0].seq) if options.end == -1 else options.end
         base_comment.update({
             "NOTE": "This is an extract from the original record!",
@@ -423,6 +443,43 @@ def add_antismash_comments(records: List[Tuple[Record, SeqRecord]], options: Con
             bio_record.annotations["structured_comment"] = {}
 
         bio_record.annotations["structured_comment"]["antiSMASH-Data"] = comment
+
+
+def _filter_records_for_output(
+        records: List,
+        results: List[Dict[str, Any]],
+        options: ConfigType,
+) -> Tuple[List, List[Dict[str, Any]], int, List[str]]:
+    """ Filter out records without regions when --skip-records-without-regions is set.
+
+        Arguments:
+            records: list of Record objects
+            results: parallel list of per-record result dicts
+            options: antismash Config instance
+
+        Returns:
+            (filtered_records, filtered_results, skipped_count, skipped_ids)
+    """
+    if not getattr(options, "output_skip_records_without_regions", False):
+        return records, results, 0, []
+
+    filtered_records = []
+    filtered_results = []
+    skipped_ids: List[str] = []
+
+    for record, result in zip(records, results):
+        if record.get_regions():
+            filtered_records.append(record)
+            filtered_results.append(result)
+        else:
+            skipped_ids.append(record.id)
+
+    skipped_count = len(skipped_ids)
+    if skipped_count:
+        logging.info("Skipping %d records without regions from output: %s",
+                     skipped_count, ", ".join(skipped_ids))
+
+    return filtered_records, filtered_results, skipped_count, skipped_ids
 
 
 def write_outputs(results: serialiser.AntismashResults, options: ConfigType) -> None:
@@ -449,24 +506,29 @@ def write_outputs(results: serialiser.AntismashResults, options: ConfigType) -> 
                 result.write_outputs(record, options)
         module_results_per_record.append(record_result)
 
+    # Apply --skip-records-without-regions filter
+    filtered_records, filtered_module_results, skipped_count, _skipped_ids = \
+        _filter_records_for_output(results.records, module_results_per_record, options)
+
     if html.is_enabled(options):
         logging.debug("Creating results page")
         start = time.time()
-        html.write(results.records, module_results_per_record, options, get_all_modules())
+        html.write(filtered_records, filtered_module_results, options, get_all_modules(),
+                   skipped_record_count=skipped_count)
         # use an average of times for html
-        duration = (time.time() - start) / len(results.records)
+        duration = (time.time() - start) / max(len(results.records), 1)
         for val in results.timings_by_record.values():
             val[html.__name__] = duration
 
-    # convert records to biopython
-    bio_records = [record.to_biopython() for record in results.records]
+    # convert records to biopython (only filtered records for output)
+    bio_records = [record.to_biopython() for record in filtered_records]
 
     # add antismash meta-annotation to records
-    add_antismash_comments(list(zip(results.records, bio_records)), options)
+    add_antismash_comments(list(zip(filtered_records, bio_records)), options)
 
     if options.region_gbks:
         logging.debug("Writing cluster-specific genbank files")
-        for record, bio_record in zip(results.records, bio_records):
+        for record, bio_record in zip(filtered_records, bio_records):
             for region in record.get_regions():
                 region.write_to_genbank(directory=options.output_dir, record=bio_record)
 
@@ -691,9 +753,734 @@ def _get_all_enabled_modules(modules: list[AntismashModule], options: ConfigType
     return [module for module in modules if module.is_enabled(options)]
 
 
+def process_record_detection(record_and_results: tuple, options: ConfigType) -> tuple:
+    """ Process a single record with detection modules only.
+
+        Designed to be called by parallel_function for record-level parallelism.
+
+        Arguments:
+            record_and_results: a tuple of (record, module_results)
+            options: antiSMASH config
+
+        Returns:
+            a tuple of (record, module_results, timings)
+    """
+    record, module_results = record_and_results
+
+    if record.skip:
+        return record, module_results, {}
+
+    logging.info("Starting detection for record: %s", record.id)
+    try:
+        timings = run_detection(record, options, module_results)
+        logging.info("Completed detection for record: %s", record.id)
+        return record, module_results, timings
+    except Exception as e:
+        logging.error("Error during detection for record %s: %s", record.id, str(e))
+        raise
+
+
+def process_record_analysis(record_and_results: tuple, options: ConfigType) -> tuple:
+    """ Process a single record with analysis modules only.
+
+        Designed to be called by parallel_function for record-level parallelism.
+
+        Arguments:
+            record_and_results: a tuple of (record, module_results)
+            options: antiSMASH config
+
+        Returns:
+            a tuple of (record, module_results, timings)
+    """
+    record, module_results = record_and_results
+
+    if record.skip or not record.get_regions():
+        return record, module_results, {}
+
+    logging.info("Starting analysis for record: %s", record.id)
+    try:
+        analysis_modules = get_analysis_modules()
+        timings = analyse_record(record, options, analysis_modules, module_results)
+        logging.info("Completed analysis for record: %s", record.id)
+        return record, module_results, timings
+    except Exception as e:
+        logging.error("Error during analysis for record %s: %s", record.id, str(e))
+        raise
+
+
+_STREAMING_RECORD_THRESHOLD = 10
+
+
+def should_use_streaming(options: ConfigType, sequence_file: Optional[str],
+                         ) -> Tuple[bool, Optional[List[Tuple[str, int]]]]:
+    """ Determine whether to use the streaming pipeline.
+
+        Arguments:
+            options: antismash config
+            sequence_file: the input sequence file path
+
+        Returns:
+            a tuple of (use_streaming, prefetched_metadata) where
+            prefetched_metadata is a list of (record_id, seq_length) tuples
+            when auto mode scanned them (to avoid re-scanning), or None
+    """
+    streaming = getattr(options, 'streaming', 'auto')
+
+    if streaming == 'off':
+        return False, None
+    if streaming == 'on':
+        if options.reuse_results:
+            logging.warning("Streaming mode cannot be used with --reuse-results, falling back to classic")
+            return False, None
+        if options.genefinding_gff3:
+            logging.warning("Streaming mode cannot be used with --genefinding-gff3, falling back to classic")
+            return False, None
+        return True, None
+
+    # auto mode
+    if not sequence_file or options.reuse_results:
+        return False, None
+    if options.genefinding_gff3:
+        return False, None
+
+    # scan record metadata (lightweight — no sequence data retained)
+    try:
+        metadata = record_processing.scan_record_metadata(
+            sequence_file, options.minlength,
+            ignore_invalid_records=not getattr(options, 'abort_on_invalid_records', True),
+        )
+    except Exception:
+        return False, None  # if scanning fails, fall back to classic
+
+    if len(metadata) > _STREAMING_RECORD_THRESHOLD:
+        logging.info("Auto-enabling streaming mode for %d records (threshold: %d)",
+                     len(metadata), _STREAMING_RECORD_THRESHOLD)
+        return True, metadata
+    return False, None
+
+
+def process_record_full(record_tuple: tuple, options: ConfigType) -> tuple:
+    """ Full pipeline for a single record. Runs in a parallel worker.
+
+        Combines secmet conversion, sanitisation, gene finding, detection,
+        and analysis into a single worker function.
+
+        Arguments:
+            record_tuple: a tuple of (SeqRecord, record_index)
+            options: antismash config
+
+        Returns:
+            a tuple of (Record, module_results_dict, timings_dict)
+    """
+    import functools
+
+    bio_record, record_index = record_tuple
+
+    # 1. Strip old antiSMASH annotations
+    record_processing.strip_record(bio_record)
+
+    # 2. Convert to secmet Record
+    try:
+        record = Record.from_biopython(bio_record, options.taxon, discard_antismash_features=True)
+    except Exception as err:
+        logging.error("Failed to convert record %s to secmet: %s", bio_record.id, err)
+        raise
+
+    record.strip_antismash_annotations()
+    record.record_index = record_index
+
+    # preserve original_id if set on the SeqRecord
+    original_id = getattr(bio_record, 'original_id', None)
+    if original_id and not record.original_id:
+        record.original_id = original_id
+
+    # 3. Sanitise sequence
+    record = record_processing.sanitise_sequence(record)
+    if record.skip:
+        return record, {}, {}
+
+    # check for empty records
+    if not record.seq:
+        logging.warning("Record %s has no sequence, skipping.", record.id)
+        record.skip = "contains no sequence"
+        return record, {}, {}
+
+    if not record.id:
+        logging.error("Record has no name")
+        record.skip = "no name"
+        return record, {}, {}
+
+    # 4. Gene finding
+    genefinding_opts = {key: val for key, val in options if key.startswith("genefinding")}
+    genefinding_opts["taxon"] = options.taxon
+    base_function = genefinding.run_on_record
+    partial = functools.partial(record_processing.ensure_cds_info, base_function,
+                                **genefinding_opts)
+    record = partial(record)
+    if record.skip:
+        return record, {}, {}
+
+    # 5. Detection
+    module_results: Dict[str, Any] = {}
+    try:
+        timings = run_detection(record, options, module_results)
+    except Exception as e:
+        logging.error("Detection failed for record %s: %s", record.id, str(e))
+        raise
+
+    # 6. Analysis (if regions found)
+    if record.get_regions():
+        try:
+            analysis_timings = analyse_record(record, options,
+                                              get_analysis_modules(), module_results)
+            timings.update(analysis_timings)
+        except Exception as e:
+            logging.error("Analysis failed for record %s: %s", record.id, str(e))
+            raise
+
+    return record, module_results, timings
+
+
+_RECORD_FAILED = "__RECORD_PROCESSING_FAILED__"  # sentinel for records that failed in parallel processing
+
+
+def _safe_process_record_full(record_tuple, options):
+    """ Wrapper around process_record_full that catches exceptions for
+        individual records, allowing the rest of the pool to continue.
+
+        When abort_on_invalid_records is True, exceptions propagate normally.
+        Otherwise, failures are logged and a sentinel tuple is returned.
+    """
+    try:
+        return process_record_full(record_tuple, options)
+    except Exception as e:
+        bio_record, record_index = record_tuple
+        if getattr(options, 'abort_on_invalid_records', True):
+            raise
+        tb = traceback.format_exc()
+        logging.error("Record %s (index %d) failed, skipping: %s",
+                      bio_record.id, record_index, e)
+        return _RECORD_FAILED, bio_record.id, tb
+
+
+def process_record_detection_streaming(record_tuple: tuple, options: ConfigType) -> tuple:
+    """ Detection-only pipeline for a single record in streaming mode.
+
+        Like process_record_full but stops after detection — no analysis step.
+        Used in Phase 1 of two-phase streaming.
+
+        Arguments:
+            record_tuple: a tuple of (SeqRecord, record_index)
+            options: antismash config
+
+        Returns:
+            a tuple of (Record, module_results_dict, timings_dict)
+    """
+    import functools
+
+    bio_record, record_index = record_tuple
+
+    # 1. Strip old antiSMASH annotations
+    record_processing.strip_record(bio_record)
+
+    # 2. Convert to secmet Record
+    try:
+        record = Record.from_biopython(bio_record, options.taxon, discard_antismash_features=True)
+    except Exception as err:
+        logging.error("Failed to convert record %s to secmet: %s", bio_record.id, err)
+        raise
+
+    record.strip_antismash_annotations()
+    record.record_index = record_index
+
+    # preserve original_id if set on the SeqRecord
+    original_id = getattr(bio_record, 'original_id', None)
+    if original_id and not record.original_id:
+        record.original_id = original_id
+
+    # 3. Sanitise sequence
+    record = record_processing.sanitise_sequence(record)
+    if record.skip:
+        return record, {}, {}
+
+    if not record.seq:
+        logging.warning("Record %s has no sequence, skipping.", record.id)
+        record.skip = "contains no sequence"
+        return record, {}, {}
+
+    if not record.id:
+        logging.error("Record has no name")
+        record.skip = "no name"
+        return record, {}, {}
+
+    # 4. Gene finding
+    genefinding_opts = {key: val for key, val in options if key.startswith("genefinding")}
+    genefinding_opts["taxon"] = options.taxon
+    base_function = genefinding.run_on_record
+    partial = functools.partial(record_processing.ensure_cds_info, base_function,
+                                **genefinding_opts)
+    record = partial(record)
+    if record.skip:
+        return record, {}, {}
+
+    # 5. Detection (NO analysis)
+    module_results: Dict[str, Any] = {}
+    try:
+        timings = run_detection(record, options, module_results)
+    except Exception as e:
+        logging.error("Detection failed for record %s: %s", record.id, str(e))
+        raise
+
+    return record, module_results, timings
+
+
+def _safe_process_record_detection_streaming(record_tuple, options):
+    """ Safe wrapper for process_record_detection_streaming.
+        Returns _RECORD_FAILED sentinel on failure when abort_on_invalid_records is False.
+    """
+    try:
+        return process_record_detection_streaming(record_tuple, options)
+    except Exception as e:
+        bio_record, record_index = record_tuple
+        if getattr(options, 'abort_on_invalid_records', True):
+            raise
+        tb = traceback.format_exc()
+        logging.error("Record %s (index %d) failed during detection, skipping: %s",
+                      bio_record.id, record_index, e)
+        return _RECORD_FAILED, bio_record.id, tb
+
+
+def _safe_process_record_analysis(record_and_results, options):
+    """ Safe wrapper for process_record_analysis.
+        Returns _RECORD_FAILED sentinel on failure when abort_on_invalid_records is False.
+    """
+    try:
+        return process_record_analysis(record_and_results, options)
+    except Exception as e:
+        record, _ = record_and_results
+        if getattr(options, 'abort_on_invalid_records', True):
+            raise
+        tb = traceback.format_exc()
+        logging.error("Record %s failed during analysis, skipping: %s",
+                      record.id, e)
+        return _RECORD_FAILED, record.id, tb
+
+
+def _preload_pfam_caches(options: ConfigType) -> None:
+    """ Pre-load PFAM databases into module-level caches for fork CoW sharing.
+
+        Arguments:
+            options: antismash config
+    """
+    from antismash.common import pfamdb
+
+    pfamdb.init_shared_cache()
+
+    if hasattr(options, 'clusterhmmer') and options.clusterhmmer:
+        database_version = options.clusterhmmer_pfamdb_version
+        if database_version == "latest":
+            database_version = pfamdb.find_latest_database_version(options.database_dir)
+        database = os.path.join(options.database_dir, 'pfam', database_version, 'Pfam-A.hmm')
+        pfamdb.preload_pfam_cutoffs(database)
+        pfamdb.preload_pfam_mappings(database)
+
+    if hasattr(options, 'fullhmmer') and options.fullhmmer:
+        database_version = options.fullhmmer_pfamdb_version
+        if database_version == "latest":
+            database_version = pfamdb.find_latest_database_version(options.database_dir)
+        database = os.path.join(options.database_dir, 'pfam', database_version, 'Pfam-A.hmm')
+        pfamdb.preload_pfam_cutoffs(database)
+        pfamdb.preload_pfam_mappings(database)
+
+
+def _preload_analysis_caches(options: ConfigType) -> None:
+    """ Pre-load analysis module databases into module-level caches for fork CoW sharing.
+
+        Must be called before forking worker processes so that workers inherit
+        the populated caches via copy-on-write, avoiding per-worker duplication.
+
+        Arguments:
+            options: antismash config
+    """
+    if hasattr(options, 'cb_general') and (
+            options.cb_general or options.cb_subclusters or options.cb_knownclusters):
+        logging.info("Pre-loading clusterblast databases for fork CoW sharing")
+        from antismash.modules.clusterblast.core import preload_clusterblast_databases
+        preload_clusterblast_databases(options)
+
+    if hasattr(options, 'cc_mibig') and (options.cc_mibig or options.cc_custom_dbs):
+        logging.info("Pre-loading cluster_compare databases for fork CoW sharing")
+        from antismash.modules.cluster_compare import preload_databases
+        preload_databases(options)
+
+    if hasattr(options, 'pfam2go') and options.pfam2go:
+        logging.info("Pre-loading pfam2go mapping for fork CoW sharing")
+        from antismash.modules.pfam2go.pfam2go import preload_pfam2go_mapping
+        preload_pfam2go_mapping()
+
+    if hasattr(options, 'tfbs') and options.tfbs:
+        logging.info("Pre-loading TFBS matrices for fork CoW sharing")
+        from antismash.modules.tfbs_finder.tfbs_finder import preload_matrices
+        preload_matrices()
+
+
+def _run_antismash_streaming(sequence_file: str, options: ConfigType,
+                             prefetched_metadata: Optional[List[Tuple[str, int]]] = None,
+                             ) -> int:
+    """ Memory-bounded streaming pipeline.
+
+        Two-pass input: first pass collects lightweight (id, length) metadata,
+        second pass streams only accepted records one at a time.  Parallel
+        processing uses lazy iteration so only one result is in memory at a
+        time on the consumer side.  Records without BGC regions are serialized
+        to JSON immediately and discarded; only the ~0.4 % of records with
+        regions are kept for HTML generation and GenBank output.
+
+        Arguments:
+            sequence_file: path to the input sequence file
+            options: antismash config
+            prefetched_metadata: optional metadata from should_use_streaming
+                                 auto-mode (avoids re-scanning)
+
+        Returns:
+            0 on success, 1 if all records failed
+    """
+    from antismash.common.subprocessing import parallel_function, parallel_function_lazy
+    from antismash.common.layers import OptionsLayer, RecordLayer
+    from antismash.outputs.html.generator import (
+        generate_region_files_for_record,
+        finalize_html_output,
+        StreamingRegionDataWriter,
+    )
+    from antismash.outputs.html.taxonomy import parse_taxonomy_file
+
+    start_time = datetime.now()
+
+    # --- Pass 1: scan metadata (id, length) without retaining sequences ---
+    if prefetched_metadata is not None:
+        metadata = prefetched_metadata
+    else:
+        metadata = record_processing.scan_record_metadata(
+            sequence_file, options.minlength,
+            ignore_invalid_records=not options.abort_on_invalid_records,
+        )
+    update_config({"input_file": os.path.splitext(os.path.basename(sequence_file))[0]})
+
+    # Resolve IDs (dedup, shorten, apply --limit_to_record / --limit)
+    accepted_ids, accepted_count = record_processing.resolve_record_ids(metadata, options)
+    del metadata  # free ~660 MB for 11M records
+
+    if accepted_count == 0:
+        raise AntismashInputError("no records remaining after filtering")
+
+    # Prepare output directory and HTML assets
+    prepare_output_directory(options.output_dir, sequence_file)
+
+    html_enabled = html.is_enabled(options)
+    if html_enabled:
+        html.copy_template_dir('css', options.output_dir, pattern=f"{options.taxon}.css")
+        html.copy_template_dir('js', options.output_dir)
+        local_js = os.path.join(options.output_dir, "js", "antismash.js")
+        if not os.path.exists(local_js):
+            js_path = html.find_local_antismash_js_path(options)
+            if js_path:
+                logging.debug("Results page using antismash.js from local copy: %s", js_path)
+                shutil.copy(js_path, local_js)
+        if not os.path.exists(local_js):
+            logging.debug("Results page using antismash.js from remote host")
+        html.copy_template_dir('images', options.output_dir)
+
+    # Save user's --workers for Phase 2 (analysis); Phase 1 uses cpus workers
+    user_workers = options.workers
+
+    # --- Phase 1 setup: preload only PFAM caches, configure for many single-threaded workers ---
+    update_config({"workers": options.cpus})  # get_effective_cpus() will return 1 in workers
+    picklable_options = _create_picklable_options(options)
+    _preload_pfam_caches(options)
+    # Do NOT preload analysis caches yet — keeps Phase 1 workers lightweight
+    gc.freeze()
+
+    # --- Pass 2: two-phase parallel processing ---
+    logging.info("Processing %d records in two-phase streaming mode", accepted_count)
+
+    # Build a lazy arg generator: iter_accepted_records yields one SeqRecord
+    # at a time, which gets paired with picklable_options for the worker
+    def _record_args():  # type: ignore[no-untyped-def]
+        for rec_tuple in record_processing.iter_accepted_records(
+                sequence_file, accepted_ids):
+            yield (rec_tuple, picklable_options)
+
+    # Open the streaming JSON writer
+    input_basename = os.path.basename(sequence_file)
+    json_filename = canonical_base_filename(input_basename, options.output_dir, options) + ".json"
+
+    all_modules = get_all_modules()
+    options_layer = OptionsLayer(options, all_modules) if html_enabled else None
+
+    # Bounded accumulators — only records WITH regions are kept
+    records_with_regions: List[Record] = []
+    results_with_regions: List[Dict[str, Any]] = []
+    timings_by_record: Dict[str, Dict[str, float]] = {}
+    results_by_record_id: Dict[str, Dict[str, ModuleResults]] = {}
+
+    total_processed = 0
+    total_without_regions = 0
+    failed_count = 0
+    skip_without_regions = getattr(options, "output_skip_records_without_regions", False)
+
+    # Collect records with regions for Phase 2
+    phase2_inputs: list = []
+
+    logging.debug("Writing streaming json results to '%s'", json_filename)
+    with open(json_filename, "w", encoding="utf-8") as json_handle:
+        json_writer = serialiser.StreamingJsonWriter(
+            json_handle, input_basename, __version__, options.taxon)
+
+        # === Phase 1: Detection (cpus workers x 1 thread each) ===
+        logging.info("Phase 1: Detection with %d workers x 1 thread", options.cpus)
+
+        for item in parallel_function_lazy(
+                _safe_process_record_detection_streaming, _record_args(),
+                cpus=options.cpus):
+
+            # handle failed records
+            if item[0] == _RECORD_FAILED:
+                _, record_id, error_msg = item
+                logging.warning("Skipping failed record %s (see debug log)", record_id)
+                logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
+                failed_count += 1
+                continue
+
+            record, mod_results, rec_timings = item
+            total_processed += 1
+            if rec_timings:
+                timings_by_record[record.id] = rec_timings
+
+            # Write detection module outputs immediately
+            for module_name, result in mod_results.items():
+                if isinstance(result, ModuleResults):
+                    assert result.record_id == record.id
+                    result.write_outputs(record, options)
+
+            has_regions = bool(record.get_regions())
+
+            if has_regions:
+                # Hold for Phase 2 — do NOT write JSON yet (analysis results pending)
+                phase2_inputs.append((record, mod_results))
+            elif not skip_without_regions:
+                # Write detection-only result to JSON and discard
+                json_writer.write_record(record, mod_results)
+                total_without_regions += 1
+            else:
+                total_without_regions += 1
+
+        logging.info("Phase 1 complete: %d records processed, %d with regions queued for analysis",
+                     total_processed, len(phase2_inputs))
+
+        # === Between phases: reconfigure for analysis ===
+        gc.collect()
+
+        if phase2_inputs:
+            # Reconfigure workers for Phase 2: fewer workers, more threads each
+            update_config({"workers": user_workers})
+            picklable_options_p2 = _create_picklable_options(options)
+
+            # NOW preload analysis caches (clusterblast general DB, etc.)
+            _preload_analysis_caches(options)
+            gc.freeze()
+
+            # === Phase 2: Analysis (user_workers x cpus/workers threads each) ===
+            effective_threads = max(1, options.cpus // user_workers)
+            logging.info("Phase 2: Analysis of %d records with %d workers x %d threads",
+                         len(phase2_inputs), user_workers, effective_threads)
+
+            analysis_args = [((rec, mr), picklable_options_p2)
+                             for rec, mr in phase2_inputs]
+
+            analysis_output = parallel_function(
+                _safe_process_record_analysis, analysis_args,
+                cpus=user_workers)
+
+            # Detection module names — used to avoid re-writing their outputs
+            detection_module_names = {m.__name__ for m in get_detection_modules()}
+
+            for item in analysis_output:
+                if item[0] == _RECORD_FAILED:
+                    _, record_id, error_msg = item
+                    logging.warning("Analysis failed for record %s (see debug log)", record_id)
+                    logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
+                    # Write detection-only results for the failed record
+                    for rec, mr in phase2_inputs:
+                        if rec.id == record_id:
+                            json_writer.write_record(rec, mr)
+                            break
+                    failed_count += 1
+                    continue
+
+                record, mod_results, analysis_timings = item
+
+                # Merge analysis timings with detection timings
+                if analysis_timings and record.id in timings_by_record:
+                    timings_by_record[record.id].update(analysis_timings)
+                elif analysis_timings:
+                    timings_by_record[record.id] = analysis_timings
+
+                # Write analysis module outputs (skip detection modules — already written)
+                for module_name, result in mod_results.items():
+                    if isinstance(result, ModuleResults) and module_name not in detection_module_names:
+                        result.write_outputs(record, options)
+
+                # Write full result (detection + analysis) to JSON
+                json_writer.write_record(record, mod_results)
+
+                # Keep for HTML/GenBank
+                filtered_results: Dict[str, ModuleResults] = {}
+                for module_name, result in mod_results.items():
+                    if isinstance(result, ModuleResults):
+                        filtered_results[module_name] = result
+                records_with_regions.append(record)
+                results_with_regions.append(mod_results)
+                results_by_record_id[record.id] = filtered_results
+        else:
+            logging.info("No records with regions found, skipping Phase 2")
+
+        json_writer.finalize(timings_by_record)
+
+    # Report failures
+    if failed_count:
+        logging.warning("Streaming pipeline: %d of %d records failed",
+                        failed_count, accepted_count)
+    if total_processed == 0:
+        logging.error("All %d records failed, aborting", accepted_count)
+        return 1
+
+    logging.info("Streaming complete: %d with regions, %d without, %d failed",
+                 len(records_with_regions), total_without_regions, failed_count)
+
+    # Build a minimal AntismashResults for annotation (only records with regions)
+    out_records = records_with_regions
+    out_results = results_with_regions
+    skipped_count = total_without_regions if skip_without_regions else 0
+
+    annotation_results = serialiser.AntismashResults(
+        input_basename, out_records, out_results,
+        __version__, timings=timings_by_record, taxon=options.taxon)
+    annotate_records(annotation_results)
+
+    # HTML generation (only for records with regions)
+    html_start = time.time()
+    if html_enabled:
+        lightweight_records: list = []
+        record_layers_with_regions: list = []
+        record_layers_without_regions: list = []
+
+        data_file_path = os.path.join(options.output_dir, "regions_data.js")
+        with open(data_file_path, "w", encoding="utf-8") as data_handle:
+            data_writer = StreamingRegionDataWriter(data_handle)
+
+            for record in out_records:
+                rec_results = results_by_record_id.get(record.id, {})
+                light_record, record_layer = generate_region_files_for_record(
+                    record, rec_results, options, all_modules, options_layer,
+                    data_writer=data_writer,
+                )
+                if record_layer is not None:
+                    lightweight_records.append(light_record)
+                    record_layers_with_regions.append(record_layer)
+                else:
+                    record_layers_without_regions.append(RecordLayer(record, None, options_layer))
+
+            data_writer.finalize()
+
+        taxonomy_mapping: Dict[str, str] = {}
+        if options.html_taxonomy:
+            taxonomy_mapping = parse_taxonomy_file(options.html_taxonomy)
+
+        finalize_html_output(
+            lightweight_records, record_layers_with_regions,
+            record_layers_without_regions, results_by_record_id,
+            options, all_modules, taxonomy_mapping=taxonomy_mapping,
+            skipped_record_count=skipped_count,
+        )
+        html_duration = (time.time() - html_start) / max(len(out_records), 1)
+        for val in timings_by_record.values():
+            val[html.__name__] = html_duration
+
+    # GenBank output — incremental, one record at a time
+    base_filename = canonical_base_filename(input_basename, options.output_dir, options)
+
+    if options.region_gbks:
+        logging.debug("Writing cluster-specific genbank files")
+        for record in out_records:
+            bio_record = record.to_biopython()
+            for region in record.get_regions():
+                region.write_to_genbank(directory=options.output_dir, record=bio_record)
+
+    if options.summary_gbk:
+        combined_filename = base_filename + ".gbk"
+        logging.debug("Writing final genbank file to '%s'", combined_filename)
+        with open(combined_filename, "w") as f:
+            for record in out_records:
+                bio_record = record.to_biopython()
+                add_antismash_comments([(record, bio_record)], options)
+                SeqIO.write([bio_record], f, "genbank")
+    else:
+        # still need to add comments for any other output consumers
+        for record in out_records:
+            bio_record = record.to_biopython()
+            add_antismash_comments([(record, bio_record)], options)
+
+    zipfile = base_filename + ".zip"
+    if os.path.exists(zipfile):
+        os.remove(zipfile)
+    if options.zip_output:
+        logging.debug("Zipping output to '%s'", zipfile)
+        with tempfile.NamedTemporaryFile(prefix="as_zip_tmp", suffix=".zip") as temp:
+            shutil.make_archive(temp.name.replace(".zip", ""), "zip", root_dir=options.output_dir)
+            shutil.copy(temp.name, zipfile)
+            os.chmod(zipfile, 0o644)
+        assert os.path.exists(zipfile)
+
+    running_time = datetime.now() - start_time
+
+    if options.debug:
+        log_module_runtimes(annotation_results.timings_by_record)
+
+    logging.debug("antiSMASH calculation finished at %s; runtime: %s",
+                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(running_time))
+
+    logging.info("antiSMASH status: SUCCESS")
+    return 0
+
+
+def _create_picklable_options(options: ConfigType) -> ConfigType:
+    """Create a copy of the options object without unpicklable module objects.
+
+    The all_enabled_modules attribute contains Python module objects which
+    cannot be pickled for multiprocessing. This creates a copy without them.
+
+    Arguments:
+        options: the original options object
+
+    Returns:
+        a copy of the options object without module objects
+    """
+    picklable_options = copy.copy(options)
+
+    # Remove the all_enabled_modules attribute, which contains module objects
+    if hasattr(picklable_options, 'all_enabled_modules'):
+        delattr(picklable_options, 'all_enabled_modules')
+
+    return picklable_options
+
+
+METASMASH_BUILD = "ms-build-5"
+
+
 def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     """ The real run_antismash, assumes logging is set up around it """
     logging.info("antiSMASH version: %s", options.version)
+    logging.info("MetaSMASH build: %s", METASMASH_BUILD)
     _log_found_executables(options)
 
     if options.list_plugins:
@@ -727,6 +1514,25 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     if not options.all_enabled_modules:
         raise ValueError("No detection or analysis modules enabled")
 
+    # resolve --workers: default to --cpus for backward compatibility
+    if options.workers < 1:
+        update_config({"workers": options.cpus})
+    else:
+        update_config({"workers": min(options.workers, options.cpus)})
+
+    # determine if streaming mode should be used
+    use_streaming, prefetched_metadata = should_use_streaming(options, sequence_file)
+
+    if use_streaming:
+        logging.info("Using streaming record processing pipeline")
+        result = _run_antismash_streaming(sequence_file, options, prefetched_metadata)
+        # save profiling data
+        if options.profile:
+            profiler.disable()
+            write_profiling_results(profiler, os.path.join(options.output_dir,
+                                                           "profiling_results"))
+        return result
+
     start_time = datetime.now()
 
     results = read_data(sequence_file, options)
@@ -738,31 +1544,82 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
 
     results.records = record_processing.pre_process_sequences(results.records, options,
                                                               cast(AntismashModule, genefinding))
-    for record, module_results in zip(results.records, results.results):
-        # skip if we're not interested in it
-        if record.skip:
-            continue
-        logging.info("Analysing record: %s", record.id)
-        timings = run_detection(record, options, module_results)
-        # and skip analysis if detection didn't find anything
-        if not record.get_regions():
-            continue
-        analysis_timings = analyse_record(record, options, get_analysis_modules(), module_results)
-        timings.update(analysis_timings)
-        results.timings_by_record[record.id] = timings
 
-    # Write results
+    # Create picklable options (removes all_enabled_modules which contains unpicklable module objects)
+    from antismash.common.subprocessing import parallel_function
+
+    picklable_options = _create_picklable_options(options)
+
+    # Build list of non-skipped records for parallel processing
+    record_and_results_list = [(record, mod_results)
+                               for record, mod_results in zip(results.records, results.results)
+                               if not record.skip]
+
+    if record_and_results_list:
+        _preload_pfam_caches(options)
+        _preload_analysis_caches(options)
+        gc.freeze()
+
+        # Create a mapping of record IDs to their indices
+        record_id_to_index = {record.id: i for i, record in enumerate(results.records)}
+
+        # Phase 1: Parallel detection
+        logging.info("Starting parallel processing of %d records for detection", len(record_and_results_list))
+        detection_output = parallel_function(
+            process_record_detection,
+            [(rec_res, picklable_options) for rec_res in record_and_results_list],
+            cpus=options.workers,
+        )
+
+        # Update records/results from detection output
+        for record, mod_results, timings in detection_output:
+            j = record_id_to_index[record.id]
+            results.records[j] = record
+            results.results[j] = mod_results
+            if timings:
+                results.timings_by_record[record.id] = timings
+
+        # Phase 2: Parallel analysis (only records with regions)
+        analysis_list = [(record, results.results[record_id_to_index[record.id]])
+                         for record, _, _ in detection_output
+                         if not record.skip and record.get_regions()]
+
+        if analysis_list:
+            logging.info("Starting parallel processing of %d records for analysis", len(analysis_list))
+            analysis_output = parallel_function(
+                process_record_analysis,
+                [(rec_res, picklable_options) for rec_res in analysis_list],
+                cpus=options.workers,
+            )
+
+            # Update records/results from analysis output
+            for record, mod_results, timings in analysis_output:
+                j = record_id_to_index[record.id]
+                results.records[j] = record
+                results.results[j] = mod_results
+                if timings:
+                    if record.id in results.timings_by_record:
+                        results.timings_by_record[record.id].update(timings)
+                    else:
+                        results.timings_by_record[record.id] = timings
+
+    # Write results (apply --skip-records-without-regions for JSON)
     logging.info("Writing results")
+    filtered_records, filtered_results_list, _skip_count, _skip_ids = \
+        _filter_records_for_output(results.records, results.results, options)
+    json_results = serialiser.AntismashResults(
+        results.input_file, filtered_records, filtered_results_list,
+        results.version, timings=results.timings_by_record, taxon=results.taxon)
     json_filename = canonical_base_filename(results.input_file, options.output_dir, options)
     json_filename += ".json"
     logging.debug("Writing json results to '%s'", json_filename)
-    results.write_to_file(json_filename)
+    json_results.write_to_file(json_filename)
 
     # now that the json is out of the way, annotate the record
     # otherwise we could double annotate some areas
     annotate_records(results)
 
-    # create relevant output files
+    # create relevant output files (uses original results for HTML, filtered for GBK)
     write_outputs(results, options)
 
     # save profiling data

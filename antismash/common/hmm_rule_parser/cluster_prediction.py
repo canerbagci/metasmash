@@ -807,6 +807,7 @@ def apply_cluster_rules(record: Record, results_by_id: Dict[str, List[ProfileHit
 def find_hmmer_hits(record: Record, sig_by_name: Dict[str, HmmSignature],
                     hmmer_db: str,
                     equivalence_groups: GenericSets,
+                    force_single_core: bool = False,
                     ) -> dict[str, list[ProfileHit]]:
     """ Finds hits for HMMer profiles in the given record
 
@@ -815,6 +816,7 @@ def find_hmmer_hits(record: Record, sig_by_name: Dict[str, HmmSignature],
             sig_by_name: a dictionary mapping profile name to Signature instance
             hmmer_db: the path to the HMMer database to find hits with
             equivalence_groups: a list of equivalence sets of HMMs
+            force_single_core: if True, only use 1 CPU core for hmmsearch
 
         Returns:
             a dictionary mapping CDS name to a list of ProfileHit instances found
@@ -822,7 +824,8 @@ def find_hmmer_hits(record: Record, sig_by_name: Dict[str, HmmSignature],
     """
     results = []
     results_by_id: Dict[str, HSP] = {}
-    runresults = run_hmmsearch(hmmer_db, fasta.get_fasta_from_record(record), use_tempfile=True)
+    runresults = run_hmmsearch(hmmer_db, fasta.get_fasta_from_record(record), use_tempfile=True,
+                               force_single_core=force_single_core)
     for runresult in runresults:
         acc = runresult.accession.split('.')[0]
         # Store result if it is above cut-off
@@ -921,6 +924,7 @@ def build_results(clusters: list[Protocluster], record: Record, tool: str,
 
 def detect_protoclusters_and_signatures(record: Record, ruleset: Ruleset,
                                         annotate_existing_subregions: bool = True,
+                                        force_single_core: bool = False,
                                         ) -> RuleDetectionResults:
     """ Compares all CDS features in a record with HMM signatures and generates
         Protocluster features based on those hits and the current protocluster detection
@@ -931,6 +935,7 @@ def detect_protoclusters_and_signatures(record: Record, ruleset: Ruleset,
             ruleset: the Ruleset instance defining what profiles exist
             annotate_existing_subregions: if True, subregions already present in the record
                     will have domains annotated even if no protocluster is found
+            force_single_core: if True, only use 1 CPU core for hmmsearch
 
         Returns:
             an instance of RuleDetectionResults
@@ -945,7 +950,8 @@ def detect_protoclusters_and_signatures(record: Record, ruleset: Ruleset,
     # get the HMMer profile results, if relevant
     if ruleset.hmm_profiles:
         results_by_id.update(find_hmmer_hits(record, ruleset.hmm_profiles, ruleset.database_file,
-                                             ruleset.get_equivalence_groups()))
+                                             ruleset.get_equivalence_groups(),
+                                             force_single_core=force_single_core))
 
     # gather dynamic hits and merge them with HMMer results
     dynamic_results = find_dynamic_hits(record, list(ruleset.dynamic_profiles.values()), results_by_id)

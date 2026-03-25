@@ -8,7 +8,7 @@ from io import StringIO
 import logging
 from typing import List, Optional
 
-from .base import execute, get_config, SearchIO
+from .base import execute, get_config, get_effective_cpus, SearchIO
 
 _THREADING_SUPPORT = True
 
@@ -33,7 +33,7 @@ def run_hmmpfam2(query_hmmfile: str, target_sequence: str, extra_args: List[str]
     base_options = list(command)
     # Only use multithreading in hmmpfam2 if supported in the hmmpfam2 build
     if _THREADING_SUPPORT:
-        command.extend(["--cpu", str(config.cpus)])
+        command.extend(["--cpu", str(get_effective_cpus())])
     command.extend([query_hmmfile, '-'])
 
     result = execute(command, stdin=target_sequence)

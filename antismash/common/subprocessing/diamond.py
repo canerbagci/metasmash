@@ -13,7 +13,7 @@ from helperlibs.wrappers.io import TemporaryDirectory
 from antismash.common import path
 from antismash.common.utils import Hit
 
-from .base import execute, get_config, RunResult
+from .base import execute, get_config, get_effective_cpus, RunResult
 
 
 def run_diamond(subcommand: str,
@@ -36,7 +36,14 @@ def run_diamond(subcommand: str,
     def run(args: list[str]) -> RunResult:
         result = execute(args)
         if not result.successful():
-            message = f"diamond failed to run: {subcommand}"
+            message = f"diamond failed to run: {subcommand} (return code: {result.return_code})"
+            if result.return_code < 0:
+                import signal as _signal
+                try:
+                    sig_name = _signal.Signals(-result.return_code).name
+                except (ValueError, AttributeError):
+                    sig_name = f"signal {-result.return_code}"
+                message += f" [killed by {sig_name}]"
             if result.stderr:
                 message += f" -> {result.stderr.strip().splitlines()[-3:]}"
             raise RuntimeError(message)
@@ -52,7 +59,7 @@ def run_diamond(subcommand: str,
     if use_default_opts:
         with TemporaryDirectory() as temp_dir:
             params.extend([
-                "--threads", str(config.cpus),
+                "--threads", str(get_effective_cpus()),
                 "--tmpdir", temp_dir,
                 # diamond will fail if a translation happens to be a subset of GCTA, so ignore those
                 # as of diamond 2.1.3, the above case is the only case where this option is relevant
@@ -116,7 +123,7 @@ def run_diamond_makedb(database_file: str, sequence_file: str) -> RunResult:
     # if it's in the range of bugged versions, run without defaults while still specifying threads
     if (2, 1, 0) <= version < (2, 1, 7):
         use_defaults = False
-        args.extend(["--threads", str(get_config().cpus)])
+        args.extend(["--threads", str(get_effective_cpus())])
 
     return run_diamond("makedb", args, use_default_opts=use_defaults)
 

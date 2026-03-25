@@ -1,0 +1,164 @@
+{% import 'dashboard_macros.html' as dashboard %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{page_title}} - Dashboard - antiSMASH results</title>
+  <style>img {width: 20px; height: 20px;}</style>
+  <link rel="stylesheet" type="text/css" href="css/{{options.taxon}}.css">
+  <meta property="og:title" content="{{page_title}} - Dashboard" />
+  <meta property="og:description" content="{{options.html_description}}">
+</head>
+<body>
+  <div id="header">
+    {% include 'header.html' %}
+  </div>
+
+  <div class="dashboard-nav">
+    <a class="dashboard-nav-item dashboard-nav-active" href="index.html">Dashboard</a>
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" href="regions.html">Detailed Results</a>
+  </div>
+
+  <div class="dashboard-container">
+    <div class="dashboard-title">{{page_title}} — Biosynthetic Gene Cluster Summary</div>
+
+    <!-- Summary cards -->
+    <div class="summary-cards">
+      {{ dashboard.stat_card("Total Records", data.summary.total_records) }}
+      {{ dashboard.stat_card("Records with BGCs", data.summary.records_with_bgcs) }}
+      {{ dashboard.stat_card("Total BGCs", data.summary.total_bgcs) }}
+      {{ dashboard.stat_card("Complete BGCs", data.summary.complete_bgcs) }}
+    </div>
+
+    {% if data.summary.total_bgcs > 0 %}
+    <!-- Chart section -->
+    <div class="chart-section">
+      <div class="chart-header">
+        <span class="chart-title">BGC Distribution</span>
+        <select id="chart-view-toggle" class="chart-toggle">
+          <option value="category">By BGC Category</option>
+          <option value="type">By BGC Type</option>
+        </select>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="bgc-chart"></canvas>
+      </div>
+      <div id="chart-filter-buttons" class="chart-filter-buttons"></div>
+    </div>
+
+    <!-- Advanced filter panel -->
+    <div class="adv-filter-panel" id="adv-filter-panel">
+      <div class="adv-filter-header" id="adv-filter-toggle">
+        <span class="adv-filter-arrow" id="adv-filter-arrow">&#9654;</span>
+        <span class="adv-filter-label">Advanced Filters</span>
+        <button class="adv-clear-all-btn" id="adv-clear-all" style="display:none;">Clear all filters</button>
+      </div>
+
+      <!-- Chips bar (always visible when filters active) -->
+      <div class="adv-chips-bar" id="adv-chips-bar"></div>
+
+      <div class="adv-filter-body" id="adv-filter-body" style="display:none;">
+        <!-- Row 1: Edge toggle -->
+        <div class="adv-filter-row">
+          <div class="adv-edge-toggle">
+            <span class="adv-row-label">Edge</span>
+            <div class="adv-toggle-group" id="adv-edge-toggle">
+              <button class="adv-toggle-btn adv-toggle-active" data-edge="all">All</button>
+              <button class="adv-toggle-btn" data-edge="complete">Complete only</button>
+              <button class="adv-toggle-btn" data-edge="on_edge">On edge only</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Row 3: Multi-select dropdowns -->
+        <div class="adv-filter-row">
+          <div class="adv-multiselect" id="adv-ms-type">
+            <span class="adv-row-label">Type</span>
+            <div class="adv-ms-control">
+              <div class="adv-ms-display" tabindex="0">All types</div>
+              <div class="adv-ms-dropdown" style="display:none;">
+                <input type="text" class="adv-ms-search" placeholder="Search types..." />
+                <div class="adv-ms-options"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="adv-multiselect" id="adv-ms-category">
+            <span class="adv-row-label">Category</span>
+            <div class="adv-ms-control">
+              <div class="adv-ms-display" tabindex="0">All categories</div>
+              <div class="adv-ms-dropdown" style="display:none;">
+                <input type="text" class="adv-ms-search" placeholder="Search categories..." />
+                <div class="adv-ms-options"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BGC table -->
+    <div class="bgc-table-section">
+      <div class="bgc-table-header">
+        <span class="bgc-table-title" id="bgc-table-title">All Biosynthetic Gene Clusters ({{data.bgc_table | length}})</span>
+        <input type="text" id="bgc-filter" class="bgc-filter-input" placeholder="Filter table...">
+      </div>
+      <table id="bgc-table" class="dashboard-table">
+        <thead>
+          <tr>
+            <th class="bgc-select-header" data-no-sort="true" style="width: 2em;">
+              <input type="checkbox" id="bgc-select-all" title="Select all visible rows" />
+            </th>
+            <th data-sort-key="record_id" style="width: 10%;">Record</th>
+            {% if has_taxonomy %}<th data-sort-key="taxonomy" style="width: 15%;">Taxonomy</th>{% endif %}
+            <th data-sort-key="region_label" style="width: 7%;">Region</th>
+            <th data-sort-key="products" style="width: 10%;">Type</th>
+            <th data-sort-key="product_categories" style="width: 8%;">Category</th>
+            <th data-sort-key="start" style="width: 7%;">From</th>
+            <th data-sort-key="end" style="width: 6%;">To</th>
+            <th data-sort-key="length" style="width: 7%;">Length</th>
+            <th data-sort-key="gene_count" style="width: 5%;">Genes</th>
+            <th data-sort-key="contig_edge" style="width: 5%;">On Edge</th>
+            <th data-sort-key="most_similar_known" style="">Most Similar Known Cluster</th>
+            <th class="bgc-navigate-header" data-no-sort="true" style="width: 2.5em;"></th>
+          </tr>
+        </thead>
+        <tbody id="bgc-table-body">
+        </tbody>
+      </table>
+      <div class="bgc-pagination" id="bgc-pagination">
+        <button id="bgc-page-prev" class="bgc-page-btn" disabled>&laquo; Prev</button>
+        <span id="bgc-page-info" class="bgc-page-info"></span>
+        <button id="bgc-page-next" class="bgc-page-btn">Next &raquo;</button>
+        <select id="bgc-page-size" class="bgc-page-size">
+          <option value="50">50 per page</option>
+          <option value="100" selected>100 per page</option>
+          <option value="250">250 per page</option>
+          <option value="500">500 per page</option>
+        </select>
+      </div>
+      <div id="bgc-selection-bar" class="bgc-selection-bar" style="display: none;">
+        <span id="bgc-selection-count">0 BGCs selected</span>
+        <button id="bgc-view-selected" class="bgc-view-selected-btn">View detailed results for selection</button>
+        <button id="bgc-clear-selection" class="bgc-clear-selection-btn">Clear selection</button>
+      </div>
+    </div>
+    {% else %}
+    <div class="no-bgcs-message">
+      No biosynthetic gene clusters were found in the input.
+    </div>
+    {% endif %}
+  </div>
+
+  {% include 'footer.html' %}
+
+  <script src="js/jquery.js"></script>
+  <script src="js/chart.min.js"></script>
+  <script>
+    var dashboardData = {{ dashboard_json }};
+  </script>
+  <script src="js/dashboard.js"></script>
+</body>
+</html>
