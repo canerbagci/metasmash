@@ -26,6 +26,7 @@ import traceback
 from typing import cast, Any, Dict, List, Optional, Tuple, Union
 
 from Bio import SeqIO
+from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from antismash.config import (
@@ -1066,6 +1067,46 @@ def _safe_process_record_analysis(record_and_results, options):
         return _RECORD_FAILED, record.id, tb
 
 
+def _strip_record_for_overview(record: Record) -> None:
+    """Strip heavy data from a Record after all per-record output is written.
+
+    Keeps record metadata (id, name, record_index, annotations), regions,
+    protoclusters, candidate clusters, subregions, and CDS features (referenced
+    by region.cds_children) so that RecordLayer/RegionLayer can still render
+    overview.html and the dashboard.
+
+    Removes: DNA sequence, CDS translations, and record-level feature indexes
+    that are no longer needed.
+    """
+    # Cache GC content before clearing sequence (used by serialiser)
+    try:
+        record.get_gc_content()
+    except (ValueError, ZeroDivisionError):
+        pass  # empty or undefined sequence, nothing to cache
+
+    # Clear the DNA sequence — typically the single largest item (3-6 MB)
+    record.seq = Seq("")
+
+    # Clear CDS translations (protein sequences, 1-2 MB total)
+    for cds in record.get_cds_features():
+        cds._translation = ""  # pylint: disable=protected-access
+
+    # Clear record-level feature indexes (frees objects not referenced by regions)
+    record._nonspecific_features.clear()  # pylint: disable=protected-access
+    record._genes.clear()  # pylint: disable=protected-access
+    record._genes_by_name.clear()  # pylint: disable=protected-access
+    record._cds_by_name.clear()  # pylint: disable=protected-access
+    record._cds_by_location.clear()  # pylint: disable=protected-access
+    record._pfam_domains.clear()  # pylint: disable=protected-access
+    record._pfams_by_cds_name.clear()  # pylint: disable=protected-access
+    record._antismash_domains.clear()  # pylint: disable=protected-access
+    record._antismash_domains_by_tool.clear()  # pylint: disable=protected-access
+    record._antismash_domains_by_cds_name.clear()  # pylint: disable=protected-access
+    record._domains_by_name.clear()  # pylint: disable=protected-access
+    record._cds_motifs.clear()  # pylint: disable=protected-access
+    record._modules.clear()  # pylint: disable=protected-access
+
+
 def _preload_pfam_caches(options: ConfigType) -> None:
     """ Pre-load PFAM databases into module-level caches for fork CoW sharing.
 
@@ -1217,19 +1258,22 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     all_modules = get_all_modules()
     options_layer = OptionsLayer(options, all_modules) if html_enabled else None
 
-    # Bounded accumulators — only records WITH regions are kept
-    records_with_regions: List[Record] = []
-    results_with_regions: List[Dict[str, Any]] = []
+    # Accumulators
     timings_by_record: Dict[str, Dict[str, float]] = {}
     results_by_record_id: Dict[str, Dict[str, ModuleResults]] = {}
 
+    # Lightweight accumulators for finalize_html_output (populated in Phase 2 loop)
+    lightweight_records: list = []
+    record_layers_with_regions: list = []
+
     total_processed = 0
     total_without_regions = 0
+    regions_count = 0
     failed_count = 0
     skip_without_regions = getattr(options, "output_skip_records_without_regions", False)
 
-    # Collect records with regions for Phase 2
-    phase2_inputs: list = []
+    # Collect records with regions for Phase 2 (dict for O(1) error-recovery lookup)
+    phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]] = {}
 
     logging.debug("Writing streaming json results to '%s'", json_filename)
     with open(json_filename, "w", encoding="utf-8") as json_handle:
@@ -1266,7 +1310,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
             if has_regions:
                 # Hold for Phase 2 — do NOT write JSON yet (analysis results pending)
-                phase2_inputs.append((record, mod_results))
+                phase2_inputs[record.id] = (record, mod_results)
             elif not skip_without_regions:
                 # Write detection-only result to JSON and discard
                 json_writer.write_record(record, mod_results)
@@ -1294,53 +1338,117 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
             logging.info("Phase 2: Analysis of %d records with %d workers x %d threads",
                          len(phase2_inputs), user_workers, effective_threads)
 
-            analysis_args = [((rec, mr), picklable_options_p2)
-                             for rec, mr in phase2_inputs]
-
-            analysis_output = parallel_function(
-                _safe_process_record_analysis, analysis_args,
-                cpus=user_workers)
+            # Lazy arg generator — snapshot keys so dict mutation in consumer is safe
+            def _analysis_args():  # type: ignore[no-untyped-def]
+                record_ids = list(phase2_inputs.keys())
+                for rec_id in record_ids:
+                    if rec_id in phase2_inputs:
+                        rec, mr = phase2_inputs[rec_id]
+                        yield ((rec, mr), picklable_options_p2)
 
             # Detection module names — used to avoid re-writing their outputs
             detection_module_names = {m.__name__ for m in get_detection_modules()}
 
-            for item in analysis_output:
-                if item[0] == _RECORD_FAILED:
-                    _, record_id, error_msg = item
-                    logging.warning("Analysis failed for record %s (see debug log)", record_id)
-                    logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
-                    # Write detection-only results for the failed record
-                    for rec, mr in phase2_inputs:
-                        if rec.id == record_id:
+            # Pre-open output handles for incremental writing
+            base_filename = canonical_base_filename(input_basename, options.output_dir, options)
+            data_handle = None
+            data_writer = None
+            gbk_handle = None
+
+            if html_enabled:
+                data_file_path = os.path.join(options.output_dir, "regions_data.js")
+                data_handle = open(data_file_path, "w", encoding="utf-8")
+                data_writer = StreamingRegionDataWriter(data_handle)
+
+            if options.summary_gbk:
+                combined_filename = base_filename + ".gbk"
+                logging.debug("Writing final genbank file to '%s'", combined_filename)
+                gbk_handle = open(combined_filename, "w")
+
+            if options.region_gbks:
+                logging.debug("Writing cluster-specific genbank files")
+
+            try:
+                for item in parallel_function_lazy(
+                        _safe_process_record_analysis, _analysis_args(),
+                        cpus=user_workers):
+                    if item[0] == _RECORD_FAILED:
+                        _, record_id, error_msg = item
+                        logging.warning("Analysis failed for record %s (see debug log)", record_id)
+                        logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
+                        # Write detection-only results for the failed record
+                        if record_id in phase2_inputs:
+                            rec, mr = phase2_inputs.pop(record_id)
                             json_writer.write_record(rec, mr)
-                            break
-                    failed_count += 1
-                    continue
+                        failed_count += 1
+                        continue
 
-                record, mod_results, analysis_timings = item
+                    record, mod_results, analysis_timings = item
 
-                # Merge analysis timings with detection timings
-                if analysis_timings and record.id in timings_by_record:
-                    timings_by_record[record.id].update(analysis_timings)
-                elif analysis_timings:
-                    timings_by_record[record.id] = analysis_timings
+                    # Merge analysis timings with detection timings
+                    if analysis_timings and record.id in timings_by_record:
+                        timings_by_record[record.id].update(analysis_timings)
+                    elif analysis_timings:
+                        timings_by_record[record.id] = analysis_timings
 
-                # Write analysis module outputs (skip detection modules — already written)
-                for module_name, result in mod_results.items():
-                    if isinstance(result, ModuleResults) and module_name not in detection_module_names:
-                        result.write_outputs(record, options)
+                    # Write analysis module outputs (skip detection — already written)
+                    filtered_results: Dict[str, ModuleResults] = {}
+                    for module_name, result in mod_results.items():
+                        if isinstance(result, ModuleResults):
+                            filtered_results[module_name] = result
+                            if module_name not in detection_module_names:
+                                result.write_outputs(record, options)
 
-                # Write full result (detection + analysis) to JSON
-                json_writer.write_record(record, mod_results)
+                    # Annotate record in-place (replaces post-loop annotate_records)
+                    for module_name, result in filtered_results.items():
+                        if module_name not in detection_module_names:
+                            result.add_to_record(record)
 
-                # Keep for HTML/GenBank
-                filtered_results: Dict[str, ModuleResults] = {}
-                for module_name, result in mod_results.items():
-                    if isinstance(result, ModuleResults):
-                        filtered_results[module_name] = result
-                records_with_regions.append(record)
-                results_with_regions.append(mod_results)
-                results_by_record_id[record.id] = filtered_results
+                    # Write full result (detection + analysis) to JSON
+                    json_writer.write_record(record, mod_results)
+
+                    # GenBank output for this record
+                    if options.region_gbks or gbk_handle is not None:
+                        bio_record = record.to_biopython()
+                        add_antismash_comments([(record, bio_record)], options)
+                        if options.region_gbks:
+                            for region in record.get_regions():
+                                region.write_to_genbank(directory=options.output_dir,
+                                                        record=bio_record)
+                        if gbk_handle is not None:
+                            SeqIO.write([bio_record], gbk_handle, "genbank")
+                        del bio_record
+
+                    # HTML region files for this record
+                    if html_enabled:
+                        light_record, record_layer = generate_region_files_for_record(
+                            record, filtered_results, options, all_modules,
+                            options_layer, data_writer=data_writer,
+                        )
+                        if record_layer is not None:
+                            # Cache gene counts before stripping heavy data
+                            for region_layer in record_layer.regions:
+                                region_layer._cached_gene_count = len(
+                                    region_layer.region_feature.cds_children)
+                            lightweight_records.append(light_record)
+                            record_layers_with_regions.append(record_layer)
+
+                    # Store lightweight results for finalize_html_output
+                    results_by_record_id[record.id] = filtered_results
+                    regions_count += 1
+
+                    # Strip heavy data — sequence, translations, feature indexes
+                    _strip_record_for_overview(record)
+
+                    # Free detection data for this record
+                    phase2_inputs.pop(record.id, None)
+            finally:
+                if data_writer is not None:
+                    data_writer.finalize()
+                if data_handle is not None:
+                    data_handle.close()
+                if gbk_handle is not None:
+                    gbk_handle.close()
         else:
             logging.info("No records with regions found, skipping Phase 2")
 
@@ -1354,43 +1462,17 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         logging.error("All %d records failed, aborting", accepted_count)
         return 1
 
-    logging.info("Streaming complete: %d with regions, %d without, %d failed",
-                 len(records_with_regions), total_without_regions, failed_count)
-
-    # Build a minimal AntismashResults for annotation (only records with regions)
-    out_records = records_with_regions
-    out_results = results_with_regions
     skipped_count = total_without_regions if skip_without_regions else 0
 
-    annotation_results = serialiser.AntismashResults(
-        input_basename, out_records, out_results,
-        __version__, timings=timings_by_record, taxon=options.taxon)
-    annotate_records(annotation_results)
+    logging.info("Streaming complete: %d with regions, %d without, %d failed",
+                 regions_count, total_without_regions, failed_count)
 
-    # HTML generation (only for records with regions)
+    # HTML finalization (overview page + dashboard) — uses lightweight data only
     html_start = time.time()
-    if html_enabled:
-        lightweight_records: list = []
-        record_layers_with_regions: list = []
-        record_layers_without_regions: list = []
-
-        data_file_path = os.path.join(options.output_dir, "regions_data.js")
-        with open(data_file_path, "w", encoding="utf-8") as data_handle:
-            data_writer = StreamingRegionDataWriter(data_handle)
-
-            for record in out_records:
-                rec_results = results_by_record_id.get(record.id, {})
-                light_record, record_layer = generate_region_files_for_record(
-                    record, rec_results, options, all_modules, options_layer,
-                    data_writer=data_writer,
-                )
-                if record_layer is not None:
-                    lightweight_records.append(light_record)
-                    record_layers_with_regions.append(record_layer)
-                else:
-                    record_layers_without_regions.append(RecordLayer(record, None, options_layer))
-
-            data_writer.finalize()
+    if html_enabled and record_layers_with_regions:
+        # Sort by record index for deterministic output order
+        record_layers_with_regions.sort(
+            key=lambda rl: rl.seq_record.record_index or 0)
 
         taxonomy_mapping: Dict[str, str] = {}
         if options.html_taxonomy:
@@ -1398,38 +1480,17 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
         finalize_html_output(
             lightweight_records, record_layers_with_regions,
-            record_layers_without_regions, results_by_record_id,
+            [], results_by_record_id,
             options, all_modules, taxonomy_mapping=taxonomy_mapping,
             skipped_record_count=skipped_count,
         )
-        html_duration = (time.time() - html_start) / max(len(out_records), 1)
+        html_duration = (time.time() - html_start) / max(regions_count, 1)
         for val in timings_by_record.values():
             val[html.__name__] = html_duration
 
-    # GenBank output — incremental, one record at a time
+    # GenBank output for records WITHOUT regions was handled during Phase 2;
+    # only zip remains
     base_filename = canonical_base_filename(input_basename, options.output_dir, options)
-
-    if options.region_gbks:
-        logging.debug("Writing cluster-specific genbank files")
-        for record in out_records:
-            bio_record = record.to_biopython()
-            for region in record.get_regions():
-                region.write_to_genbank(directory=options.output_dir, record=bio_record)
-
-    if options.summary_gbk:
-        combined_filename = base_filename + ".gbk"
-        logging.debug("Writing final genbank file to '%s'", combined_filename)
-        with open(combined_filename, "w") as f:
-            for record in out_records:
-                bio_record = record.to_biopython()
-                add_antismash_comments([(record, bio_record)], options)
-                SeqIO.write([bio_record], f, "genbank")
-    else:
-        # still need to add comments for any other output consumers
-        for record in out_records:
-            bio_record = record.to_biopython()
-            add_antismash_comments([(record, bio_record)], options)
-
     zipfile = base_filename + ".zip"
     if os.path.exists(zipfile):
         os.remove(zipfile)
@@ -1444,7 +1505,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     running_time = datetime.now() - start_time
 
     if options.debug:
-        log_module_runtimes(annotation_results.timings_by_record)
+        log_module_runtimes(timings_by_record)
 
     logging.debug("antiSMASH calculation finished at %s; runtime: %s",
                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(running_time))

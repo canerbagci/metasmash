@@ -10,7 +10,15 @@ from antismash.common.layers import RecordLayer, RegionLayer
 
 
 def _get_gene_count(region: RegionLayer) -> int:
-    """Returns the number of CDS features in a region."""
+    """Returns the number of CDS features in a region.
+
+    Uses a pre-cached count when available (set during streaming Phase 2
+    before heavy record data is stripped), falling back to the live count
+    for the classic (non-streaming) code path.
+    """
+    cached = getattr(region, '_cached_gene_count', None)
+    if cached is not None:
+        return cached
     return len(region.region_feature.cds_children)
 
 
