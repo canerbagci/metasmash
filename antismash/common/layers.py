@@ -142,6 +142,8 @@ class RegionLayer:
         assert region_feature.parent_record
         self.record: RecordLayer = record
         self.anchor_id = self.build_anchor_id(region_feature)
+        self._region_number = region_feature.get_region_number()
+        self._contig_edge = region_feature.contig_edge
         self.handlers: List[AntismashModule] = []
         self.region_feature: Region = region_feature
 
@@ -202,6 +204,15 @@ class RegionLayer:
             given tool name
         """
         return any(sub.tool == tool for sub in self.subregions)
+
+    def get_region_number(self) -> int:
+        """ Returns the cached region number """
+        return self._region_number
+
+    @property
+    def contig_edge(self) -> bool:
+        """ Returns the cached contig edge status """
+        return self._contig_edge
 
     @staticmethod
     def build_anchor_id(region: Region) -> str:

@@ -92,7 +92,7 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
             region_len = len(region.location)
             gene_count = _get_gene_count(region)
 
-            on_edge = region.region_feature.contig_edge
+            on_edge = region.contig_edge
             if not on_edge:
                 complete_bgcs += 1
             edge_key = "on_edge" if on_edge else "complete"
