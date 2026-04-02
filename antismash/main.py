@@ -23,7 +23,7 @@ import tempfile
 import copy
 import gc
 import traceback
-from typing import cast, Any, Dict, List, Optional, Tuple, Union
+from typing import cast, Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -34,7 +34,7 @@ from antismash.config import (
     get_config,
     update_config,
 )
-from antismash.common import errors, logs, record_processing, serialiser
+from antismash.common import errors, logs, memory as memory_diagnostics, record_processing, serialiser
 from antismash.common.errors import AntismashInputError
 from antismash.common.module_results import ModuleResults, DetectionResults
 from antismash.common.path import get_full_path
@@ -159,6 +159,12 @@ def verify_options(options: ConfigType, modules: List[AntismashModule]) -> bool:
             True if no problems detected, otherwise False
     """
     errors_found: List[str] = []
+    configured_phase1_batch = int(getattr(options, "streaming_phase1_batch_size", 0) or 0)
+    configured_phase2_window = int(getattr(options, "streaming_phase2_window_size", 0) or 0)
+    if configured_phase1_batch < 0:
+        errors_found.append("--streaming-phase1-batch-size must be >= 0")
+    if configured_phase2_window < 0:
+        errors_found.append("--streaming-phase2-window-size must be >= 0")
     for module in modules:
         try:
             logging.debug("Checking options for %s", module.__name__)
@@ -945,6 +951,68 @@ def process_record_full(record_tuple: tuple, options: ConfigType) -> tuple:
 _RECORD_FAILED = "__RECORD_PROCESSING_FAILED__"  # sentinel for records that failed in parallel processing
 
 
+def _format_worker_memory_delta(before_mb: Optional[float], after_mb: Optional[float]) -> str:
+    """ Format an RSS delta for diagnostics logging. """
+    if before_mb is None or after_mb is None:
+        return "n/a"
+    return f"{after_mb - before_mb:+.1f} MB"
+
+
+def _log_worker_memory(label: str, record: Optional[Record], options: ConfigType,
+                       rss_before_mb: Optional[float],
+                       record_id: Optional[str] = None,
+                       timings: Optional[Dict[str, float]] = None,
+                       error: Optional[str] = None) -> None:
+    """ Log worker-side memory diagnostics for a single record. """
+    if not memory_diagnostics.diagnostics_enabled(options):
+        return
+    resolved_record_id = record.id if record is not None else record_id or "unknown"
+    regions = len(record.get_regions()) if record is not None else -1
+    cds_count = len(record.get_cds_features()) if record is not None else -1
+    total_time = sum(timings.values()) if timings else 0.0
+    rss_after_mb = memory_diagnostics.current_rss_mb()
+    logging.info(
+        "memdiag worker phase=%s pid=%d record=%s rss=%s peak=%s delta=%s regions=%d cds=%d time=%.2fs%s",
+        label,
+        os.getpid(),
+        resolved_record_id,
+        memory_diagnostics.format_mb(rss_after_mb),
+        memory_diagnostics.format_mb(memory_diagnostics.peak_rss_mb()),
+        _format_worker_memory_delta(rss_before_mb, rss_after_mb),
+        regions,
+        cds_count,
+        total_time,
+        f" error={error}" if error else "",
+    )
+
+
+def _log_parent_memory(label: str, options: ConfigType,
+                       extra: Optional[Dict[str, Union[int, str]]] = None,
+                       trace_snapshot: Any = None) -> Any:
+    """ Log parent-side memory diagnostics for streaming runs. """
+    if not memory_diagnostics.diagnostics_enabled(options):
+        return trace_snapshot
+
+    stats = memory_diagnostics.process_tree_stats()
+    counts = memory_diagnostics.tracked_object_counts()
+    details = [
+        f"parent_rss={memory_diagnostics.format_mb(stats['parent_rss_mb'])}",
+        f"descendants={int(stats['descendant_count'] or 0)}",
+        f"descendant_rss={memory_diagnostics.format_mb(stats['descendant_rss_mb'])}",
+        f"known_descendants={int(stats['descendant_rss_known_count'] or 0)}",
+        f"records={counts['Record']}",
+        f"record_layers={counts['RecordLayer']}",
+        f"region_layers={counts['RegionLayer']}",
+        f"module_results={counts['ModuleResults']}",
+    ]
+    if extra:
+        details.extend(f"{key}={value}" for key, value in extra.items())
+    logging.info("memdiag parent %s %s", label, " ".join(details))
+    if memory_diagnostics.tracemalloc_enabled(options):
+        return memory_diagnostics.maybe_log_tracemalloc(label, trace_snapshot)
+    return trace_snapshot
+
+
 def _safe_process_record_full(record_tuple, options):
     """ Wrapper around process_record_full that catches exceptions for
         individual records, allowing the rest of the pool to continue.
@@ -1039,8 +1107,12 @@ def _safe_process_record_detection_streaming(record_tuple, options):
     """ Safe wrapper for process_record_detection_streaming.
         Returns _RECORD_FAILED sentinel on failure when abort_on_invalid_records is False.
     """
+    rss_before_mb = memory_diagnostics.current_rss_mb() if memory_diagnostics.diagnostics_enabled(options) else None
     try:
-        return process_record_detection_streaming(record_tuple, options)
+        result = process_record_detection_streaming(record_tuple, options)
+        record, _, timings = result
+        _log_worker_memory("detection", record, options, rss_before_mb, timings=timings)
+        return result
     except Exception as e:
         bio_record, record_index = record_tuple
         if getattr(options, 'abort_on_invalid_records', True):
@@ -1048,6 +1120,8 @@ def _safe_process_record_detection_streaming(record_tuple, options):
         tb = traceback.format_exc()
         logging.error("Record %s (index %d) failed during detection, skipping: %s",
                       bio_record.id, record_index, e)
+        _log_worker_memory("detection-failed", None, options, rss_before_mb,
+                           record_id=bio_record.id, error=str(e))
         return _RECORD_FAILED, bio_record.id, tb
 
 
@@ -1055,8 +1129,12 @@ def _safe_process_record_analysis(record_and_results, options):
     """ Safe wrapper for process_record_analysis.
         Returns _RECORD_FAILED sentinel on failure when abort_on_invalid_records is False.
     """
+    rss_before_mb = memory_diagnostics.current_rss_mb() if memory_diagnostics.diagnostics_enabled(options) else None
     try:
-        return process_record_analysis(record_and_results, options)
+        result = process_record_analysis(record_and_results, options)
+        record, _, timings = result
+        _log_worker_memory("analysis", record, options, rss_before_mb, timings=timings)
+        return result
     except Exception as e:
         record, _ = record_and_results
         if getattr(options, 'abort_on_invalid_records', True):
@@ -1064,6 +1142,8 @@ def _safe_process_record_analysis(record_and_results, options):
         tb = traceback.format_exc()
         logging.error("Record %s failed during analysis, skipping: %s",
                       record.id, e)
+        _log_worker_memory("analysis-failed", record, options, rss_before_mb,
+                           record_id=record.id, error=str(e))
         return _RECORD_FAILED, record.id, tb
 
 
@@ -1165,6 +1245,200 @@ def _preload_analysis_caches(options: ConfigType) -> None:
         preload_matrices()
 
 
+_STREAMING_PHASE2_WINDOW_MIN = 1024
+
+
+def _compute_streaming_phase1_batch_size(options: ConfigType) -> int:
+    """Return the bounded Phase 1 detection batch size for streaming runs."""
+    configured = int(getattr(options, "streaming_phase1_batch_size", 0) or 0)
+    if configured < 0:
+        raise ValueError("streaming_phase1_batch_size must be >= 0")
+    if configured:
+        return configured
+    return max(_STREAMING_PHASE2_WINDOW_MIN, int(options.workers) * 4)
+
+
+def _compute_streaming_phase2_window_size(options: ConfigType) -> int:
+    """Return the bounded Phase 2 window size for streaming runs."""
+    configured = int(getattr(options, "streaming_phase2_window_size", 0) or 0)
+    if configured < 0:
+        raise ValueError("streaming_phase2_window_size must be >= 0")
+    if configured:
+        return configured
+    return max(_STREAMING_PHASE2_WINDOW_MIN, int(options.workers) * 4)
+
+
+def _take_record_batch(record_iterator: Iterator[Tuple[SeqRecord, int]],
+                       batch_size: int) -> List[Tuple[SeqRecord, int]]:
+    """Take up to batch_size records from an iterator."""
+    batch: List[Tuple[SeqRecord, int]] = []
+    for _ in range(batch_size):
+        try:
+            batch.append(next(record_iterator))
+        except StopIteration:
+            break
+    return batch
+
+
+def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
+                       options: ConfigType,
+                       picklable_options_p2: ConfigType,
+                       user_workers: int,
+                       json_writer: serialiser.StreamingJsonWriter,
+                       all_modules: List[AntismashModule],
+                       options_layer: Any,
+                       data_writer: Any,
+                       gbk_handle: Any,
+                       timings_by_record: Dict[str, Dict[str, float]],
+                       lightweight_records: List[Dict[str, Any]],
+                       record_summaries: List[Any],
+                       detection_module_names: set[str],
+                       phase2_seen: int,
+                       regions_count: int,
+                       failed_count: int,
+                       trace_snapshot: Any,
+                       window_index: int,
+                       window_size: int) -> Tuple[int, int, int, Any]:
+    """Run one bounded Phase 2 analysis window."""
+    from antismash.common.subprocessing import parallel_function_lazy
+    from antismash.outputs.html.generator import generate_region_files_for_record
+
+    effective_threads = max(1, options.cpus // user_workers)
+    logging.info("Phase 2 window %d: Analysis of %d records with %d workers x %d threads",
+                 window_index, len(phase2_inputs), user_workers, effective_threads)
+    trace_snapshot = _log_parent_memory(
+        "phase2-window-start",
+        options,
+        extra={
+            "window_index": window_index,
+            "window_size": window_size,
+            "pending_phase2": len(phase2_inputs),
+            "workers": user_workers,
+            "threads_per_worker": effective_threads,
+            "stored_record_summaries": len(record_summaries),
+            "stored_lightweight_records": len(lightweight_records),
+        },
+        trace_snapshot=trace_snapshot,
+    )
+
+    def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType]]:
+        record_ids = list(phase2_inputs.keys())
+        for rec_id in record_ids:
+            if rec_id in phase2_inputs:
+                rec, mr = phase2_inputs[rec_id]
+                yield ((rec, mr), picklable_options_p2)
+
+    for item in parallel_function_lazy(
+            _safe_process_record_analysis, _analysis_args(),
+            cpus=user_workers):
+        phase2_seen += 1
+        if item[0] == _RECORD_FAILED:
+            _, record_id, error_msg = item
+            logging.warning("Analysis failed for record %s (see debug log)", record_id)
+            logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
+            if record_id in phase2_inputs:
+                rec, mr = phase2_inputs.pop(record_id)
+                json_writer.write_record(rec, mr)
+            failed_count += 1
+            if (memory_diagnostics.diagnostics_enabled(options)
+                    and phase2_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                trace_snapshot = _log_parent_memory(
+                    "phase2-progress",
+                    options,
+                    extra={
+                        "window_index": window_index,
+                        "window_size": window_size,
+                        "seen": phase2_seen,
+                        "completed": regions_count,
+                        "pending_phase2": len(phase2_inputs),
+                        "stored_record_summaries": len(record_summaries),
+                        "stored_lightweight_records": len(lightweight_records),
+                        "failed": failed_count,
+                    },
+                    trace_snapshot=trace_snapshot,
+                )
+            continue
+
+        record, mod_results, analysis_timings = item
+
+        if analysis_timings and record.id in timings_by_record:
+            timings_by_record[record.id].update(analysis_timings)
+        elif analysis_timings:
+            timings_by_record[record.id] = analysis_timings
+
+        filtered_results: Dict[str, ModuleResults] = {}
+        for module_name, result in mod_results.items():
+            if isinstance(result, ModuleResults):
+                filtered_results[module_name] = result
+                if module_name not in detection_module_names:
+                    result.write_outputs(record, options)
+
+        for module_name, result in filtered_results.items():
+            if module_name not in detection_module_names:
+                result.add_to_record(record)
+
+        json_writer.write_record(record, mod_results)
+
+        if options.region_gbks or gbk_handle is not None:
+            bio_record = record.to_biopython()
+            add_antismash_comments([(record, bio_record)], options)
+            if options.region_gbks:
+                for region in record.get_regions():
+                    region.write_to_genbank(directory=options.output_dir,
+                                            record=bio_record)
+            if gbk_handle is not None:
+                SeqIO.write([bio_record], gbk_handle, "genbank")
+            del bio_record
+
+        if options_layer is not None:
+            light_record, record_summary = generate_region_files_for_record(
+                record, filtered_results, options, all_modules,
+                options_layer, data_writer=data_writer,
+            )
+            if record_summary is not None:
+                lightweight_records.append(light_record)
+                record_summaries.append(record_summary)
+
+        regions_count += 1
+        _strip_record_for_overview(record)
+        phase2_inputs.pop(record.id, None)
+
+        if (memory_diagnostics.diagnostics_enabled(options)
+                and phase2_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+            trace_snapshot = _log_parent_memory(
+                "phase2-progress",
+                options,
+                extra={
+                    "window_index": window_index,
+                    "window_size": window_size,
+                    "seen": phase2_seen,
+                    "completed": regions_count,
+                    "pending_phase2": len(phase2_inputs),
+                    "stored_record_summaries": len(record_summaries),
+                    "stored_lightweight_records": len(lightweight_records),
+                    "failed": failed_count,
+                },
+                trace_snapshot=trace_snapshot,
+            )
+
+    trace_snapshot = _log_parent_memory(
+        "phase2-window-complete",
+        options,
+        extra={
+            "window_index": window_index,
+            "window_size": window_size,
+            "seen": phase2_seen,
+            "completed": regions_count,
+            "pending_phase2": len(phase2_inputs),
+            "stored_record_summaries": len(record_summaries),
+            "stored_lightweight_records": len(lightweight_records),
+            "failed": failed_count,
+        },
+        trace_snapshot=trace_snapshot,
+    )
+    return phase2_seen, regions_count, failed_count, trace_snapshot
+
+
 def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                              prefetched_metadata: Optional[List[Tuple[str, int]]] = None,
                              ) -> int:
@@ -1186,11 +1460,10 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         Returns:
             0 on success, 1 if all records failed
     """
-    from antismash.common.subprocessing import parallel_function, parallel_function_lazy
-    from antismash.common.layers import OptionsLayer, RecordLayer
+    from antismash.common.subprocessing import parallel_function_lazy
+    from antismash.common.layers import OptionsLayer
     from antismash.outputs.html.generator import (
-        generate_region_files_for_record,
-        finalize_html_output,
+        finalize_streaming_html_output,
         StreamingRegionDataWriter,
     )
     from antismash.outputs.html.taxonomy import parse_taxonomy_file
@@ -1241,15 +1514,14 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     # Do NOT preload analysis caches yet — keeps Phase 1 workers lightweight
     gc.freeze()
 
+    trace_snapshot = None
+    memory_diagnostics.maybe_start_tracemalloc(options)
+    phase1_batch_size = _compute_streaming_phase1_batch_size(options)
+    phase2_window_size = _compute_streaming_phase2_window_size(options)
+
     # --- Pass 2: two-phase parallel processing ---
     logging.info("Processing %d records in two-phase streaming mode", accepted_count)
-
-    # Build a lazy arg generator: iter_accepted_records yields one SeqRecord
-    # at a time, which gets paired with picklable_options for the worker
-    def _record_args():  # type: ignore[no-untyped-def]
-        for rec_tuple in record_processing.iter_accepted_records(
-                sequence_file, accepted_ids):
-            yield (rec_tuple, picklable_options)
+    accepted_records = iter(record_processing.iter_accepted_records(sequence_file, accepted_ids))
 
     # Open the streaming JSON writer
     input_basename = os.path.basename(sequence_file)
@@ -1260,199 +1532,215 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
     # Accumulators
     timings_by_record: Dict[str, Dict[str, float]] = {}
-    results_by_record_id: Dict[str, Dict[str, ModuleResults]] = {}
 
-    # Lightweight accumulators for finalize_html_output (populated in Phase 2 loop)
-    lightweight_records: list = []
-    record_layers_with_regions: list = []
+    # Lightweight accumulators for finalize_streaming_html_output
+    lightweight_records: List[Dict[str, Any]] = []
+    record_summaries: List[Any] = []
 
     total_processed = 0
     total_without_regions = 0
     regions_count = 0
     failed_count = 0
     skip_without_regions = getattr(options, "output_skip_records_without_regions", False)
+    phase1_seen = 0
+    phase2_seen = 0
 
     # Collect records with regions for Phase 2 (dict for O(1) error-recovery lookup)
     phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]] = {}
+    detection_module_names = {m.__name__ for m in get_detection_modules()}
+    phase1_batch_index = 0
+    window_index = 0
+    source_exhausted = False
+    analysis_caches_preloaded = False
+    picklable_options_p2: Optional[ConfigType] = None
+    data_handle = None
+    data_writer = None
+    gbk_handle = None
 
     logging.debug("Writing streaming json results to '%s'", json_filename)
+    trace_snapshot = _log_parent_memory(
+        "streaming-start",
+        options,
+        extra={
+            "accepted_count": accepted_count,
+            "workers": options.cpus,
+            "analysis_workers": user_workers,
+            "phase1_batch_size": phase1_batch_size,
+            "window_size": phase2_window_size,
+        },
+        trace_snapshot=trace_snapshot,
+    )
     with open(json_filename, "w", encoding="utf-8") as json_handle:
         json_writer = serialiser.StreamingJsonWriter(
             json_handle, input_basename, __version__, options.taxon)
+        try:
+            while not source_exhausted or phase2_inputs:
+                while not source_exhausted and len(phase2_inputs) < phase2_window_size:
+                    record_batch = _take_record_batch(accepted_records, phase1_batch_size)
+                    if not record_batch:
+                        source_exhausted = True
+                        break
 
-        # === Phase 1: Detection (cpus workers x 1 thread each) ===
-        logging.info("Phase 1: Detection with %d workers x 1 thread", options.cpus)
+                    phase1_batch_index += 1
+                    update_config({"workers": options.cpus})
+                    logging.info("Phase 1 batch %d: Detection with %d workers x 1 thread over %d records",
+                                 phase1_batch_index, options.cpus, len(record_batch))
+                    trace_snapshot = _log_parent_memory(
+                        "phase1-batch-start",
+                        options,
+                        extra={
+                            "batch_index": phase1_batch_index,
+                            "batch_size": len(record_batch),
+                            "phase1_batch_size": phase1_batch_size,
+                            "window_size": phase2_window_size,
+                            "pending_phase2": len(phase2_inputs),
+                            "processed": total_processed,
+                            "without_regions": total_without_regions,
+                            "failed": failed_count,
+                        },
+                        trace_snapshot=trace_snapshot,
+                    )
 
-        for item in parallel_function_lazy(
-                _safe_process_record_detection_streaming, _record_args(),
-                cpus=options.cpus):
+                    def _record_args(batch: List[Tuple[SeqRecord, int]] = record_batch
+                                     ) -> Iterator[Tuple[Tuple[SeqRecord, int], ConfigType]]:
+                        for rec_tuple in batch:
+                            yield (rec_tuple, picklable_options)
 
-            # handle failed records
-            if item[0] == _RECORD_FAILED:
-                _, record_id, error_msg = item
-                logging.warning("Skipping failed record %s (see debug log)", record_id)
-                logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
-                failed_count += 1
-                continue
+                    for item in parallel_function_lazy(
+                            _safe_process_record_detection_streaming, _record_args(),
+                            cpus=options.cpus):
+                        phase1_seen += 1
 
-            record, mod_results, rec_timings = item
-            total_processed += 1
-            if rec_timings:
-                timings_by_record[record.id] = rec_timings
+                        if item[0] == _RECORD_FAILED:
+                            _, record_id, error_msg = item
+                            logging.warning("Skipping failed record %s (see debug log)", record_id)
+                            logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
+                            failed_count += 1
+                            if (memory_diagnostics.diagnostics_enabled(options)
+                                    and phase1_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                                trace_snapshot = _log_parent_memory(
+                                    "phase1-progress",
+                                    options,
+                                    extra={
+                                        "batch_index": phase1_batch_index,
+                                        "phase1_batch_size": phase1_batch_size,
+                                        "window_size": phase2_window_size,
+                                        "seen": phase1_seen,
+                                        "processed": total_processed,
+                                        "pending_phase2": len(phase2_inputs),
+                                        "without_regions": total_without_regions,
+                                        "failed": failed_count,
+                                    },
+                                    trace_snapshot=trace_snapshot,
+                                )
+                            continue
 
-            # Write detection module outputs immediately
-            for module_name, result in mod_results.items():
-                if isinstance(result, ModuleResults):
-                    assert result.record_id == record.id
-                    result.write_outputs(record, options)
+                        record, mod_results, rec_timings = item
+                        total_processed += 1
+                        if rec_timings:
+                            timings_by_record[record.id] = rec_timings
 
-            has_regions = bool(record.get_regions())
-
-            if has_regions:
-                # Hold for Phase 2 — do NOT write JSON yet (analysis results pending)
-                phase2_inputs[record.id] = (record, mod_results)
-            elif not skip_without_regions:
-                # Write detection-only result to JSON and discard
-                json_writer.write_record(record, mod_results)
-                total_without_regions += 1
-            else:
-                total_without_regions += 1
-
-        logging.info("Phase 1 complete: %d records processed, %d with regions queued for analysis",
-                     total_processed, len(phase2_inputs))
-
-        # === Between phases: reconfigure for analysis ===
-        gc.collect()
-
-        if phase2_inputs:
-            # Reconfigure workers for Phase 2: fewer workers, more threads each
-            update_config({"workers": user_workers})
-            picklable_options_p2 = _create_picklable_options(options)
-
-            # NOW preload analysis caches (clusterblast general DB, etc.)
-            _preload_analysis_caches(options)
-            gc.freeze()
-
-            # === Phase 2: Analysis (user_workers x cpus/workers threads each) ===
-            effective_threads = max(1, options.cpus // user_workers)
-            logging.info("Phase 2: Analysis of %d records with %d workers x %d threads",
-                         len(phase2_inputs), user_workers, effective_threads)
-
-            # Lazy arg generator — snapshot keys so dict mutation in consumer is safe
-            def _analysis_args():  # type: ignore[no-untyped-def]
-                record_ids = list(phase2_inputs.keys())
-                for rec_id in record_ids:
-                    if rec_id in phase2_inputs:
-                        rec, mr = phase2_inputs[rec_id]
-                        yield ((rec, mr), picklable_options_p2)
-
-            # Detection module names — used to avoid re-writing their outputs
-            detection_module_names = {m.__name__ for m in get_detection_modules()}
-
-            # Pre-open output handles for incremental writing
-            base_filename = canonical_base_filename(input_basename, options.output_dir, options)
-            data_handle = None
-            data_writer = None
-            gbk_handle = None
-
-            if html_enabled:
-                data_file_path = os.path.join(options.output_dir, "regions_data.js")
-                data_handle = open(data_file_path, "w", encoding="utf-8")
-                data_writer = StreamingRegionDataWriter(data_handle)
-
-            if options.summary_gbk:
-                combined_filename = base_filename + ".gbk"
-                logging.debug("Writing final genbank file to '%s'", combined_filename)
-                gbk_handle = open(combined_filename, "w")
-
-            if options.region_gbks:
-                logging.debug("Writing cluster-specific genbank files")
-
-            try:
-                for item in parallel_function_lazy(
-                        _safe_process_record_analysis, _analysis_args(),
-                        cpus=user_workers):
-                    if item[0] == _RECORD_FAILED:
-                        _, record_id, error_msg = item
-                        logging.warning("Analysis failed for record %s (see debug log)", record_id)
-                        logging.debug("Traceback for failed record %s:\n%s", record_id, error_msg)
-                        # Write detection-only results for the failed record
-                        if record_id in phase2_inputs:
-                            rec, mr = phase2_inputs.pop(record_id)
-                            json_writer.write_record(rec, mr)
-                        failed_count += 1
-                        continue
-
-                    record, mod_results, analysis_timings = item
-
-                    # Merge analysis timings with detection timings
-                    if analysis_timings and record.id in timings_by_record:
-                        timings_by_record[record.id].update(analysis_timings)
-                    elif analysis_timings:
-                        timings_by_record[record.id] = analysis_timings
-
-                    # Write analysis module outputs (skip detection — already written)
-                    filtered_results: Dict[str, ModuleResults] = {}
-                    for module_name, result in mod_results.items():
-                        if isinstance(result, ModuleResults):
-                            filtered_results[module_name] = result
-                            if module_name not in detection_module_names:
+                        for module_name, result in mod_results.items():
+                            if isinstance(result, ModuleResults):
+                                assert result.record_id == record.id
                                 result.write_outputs(record, options)
 
-                    # Annotate record in-place (replaces post-loop annotate_records)
-                    for module_name, result in filtered_results.items():
-                        if module_name not in detection_module_names:
-                            result.add_to_record(record)
+                        if record.get_regions():
+                            phase2_inputs[record.id] = (record, mod_results)
+                        elif not skip_without_regions:
+                            json_writer.write_record(record, mod_results)
+                            total_without_regions += 1
+                        else:
+                            total_without_regions += 1
 
-                    # Write full result (detection + analysis) to JSON
-                    json_writer.write_record(record, mod_results)
+                        if (memory_diagnostics.diagnostics_enabled(options)
+                                and phase1_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                            trace_snapshot = _log_parent_memory(
+                                "phase1-progress",
+                                options,
+                                extra={
+                                    "batch_index": phase1_batch_index,
+                                    "phase1_batch_size": phase1_batch_size,
+                                    "window_size": phase2_window_size,
+                                    "seen": phase1_seen,
+                                    "processed": total_processed,
+                                    "pending_phase2": len(phase2_inputs),
+                                    "without_regions": total_without_regions,
+                                    "failed": failed_count,
+                                },
+                                trace_snapshot=trace_snapshot,
+                            )
 
-                    # GenBank output for this record
-                    if options.region_gbks or gbk_handle is not None:
-                        bio_record = record.to_biopython()
-                        add_antismash_comments([(record, bio_record)], options)
-                        if options.region_gbks:
-                            for region in record.get_regions():
-                                region.write_to_genbank(directory=options.output_dir,
-                                                        record=bio_record)
-                        if gbk_handle is not None:
-                            SeqIO.write([bio_record], gbk_handle, "genbank")
-                        del bio_record
+                    trace_snapshot = _log_parent_memory(
+                        "phase1-batch-complete",
+                        options,
+                        extra={
+                            "batch_index": phase1_batch_index,
+                            "batch_size": len(record_batch),
+                            "phase1_batch_size": phase1_batch_size,
+                            "window_size": phase2_window_size,
+                            "seen": phase1_seen,
+                            "processed": total_processed,
+                            "pending_phase2": len(phase2_inputs),
+                            "without_regions": total_without_regions,
+                            "failed": failed_count,
+                        },
+                        trace_snapshot=trace_snapshot,
+                    )
+                    gc.collect()
 
-                    # HTML region files for this record
-                    if html_enabled:
-                        light_record, record_layer = generate_region_files_for_record(
-                            record, filtered_results, options, all_modules,
-                            options_layer, data_writer=data_writer,
-                        )
-                        if record_layer is not None:
-                            # Cache gene counts before stripping heavy data
-                            for region_layer in record_layer.regions:
-                                region_layer._cached_gene_count = len(
-                                    region_layer.region_feature.cds_children)
-                            lightweight_records.append(light_record)
-                            record_layers_with_regions.append(record_layer)
+                    if len(phase2_inputs) >= phase2_window_size:
+                        break
 
-                    # Store lightweight results for finalize_html_output
-                    results_by_record_id[record.id] = filtered_results
-                    regions_count += 1
+                if phase2_inputs:
+                    window_index += 1
+                    update_config({"workers": user_workers})
+                    if picklable_options_p2 is None:
+                        picklable_options_p2 = _create_picklable_options(options)
+                    if not analysis_caches_preloaded:
+                        _preload_analysis_caches(options)
+                        gc.freeze()
+                        analysis_caches_preloaded = True
 
-                    # Strip heavy data — sequence, translations, feature indexes
-                    _strip_record_for_overview(record)
+                    if html_enabled and data_writer is None:
+                        data_file_path = os.path.join(options.output_dir, "regions_data.js")
+                        data_handle = open(data_file_path, "w", encoding="utf-8")
+                        data_writer = StreamingRegionDataWriter(data_handle)
 
-                    # Free detection data for this record
-                    phase2_inputs.pop(record.id, None)
-            finally:
-                if data_writer is not None:
-                    data_writer.finalize()
-                if data_handle is not None:
-                    data_handle.close()
-                if gbk_handle is not None:
-                    gbk_handle.close()
-        else:
-            logging.info("No records with regions found, skipping Phase 2")
+                    if options.summary_gbk and gbk_handle is None:
+                        combined_filename = canonical_base_filename(
+                            input_basename, options.output_dir, options
+                        ) + ".gbk"
+                        logging.debug("Writing final genbank file to '%s'", combined_filename)
+                        gbk_handle = open(combined_filename, "w")
 
-        json_writer.finalize(timings_by_record)
+                    if options.region_gbks and window_index == 1:
+                        logging.debug("Writing cluster-specific genbank files")
+
+                    phase2_seen, regions_count, failed_count, trace_snapshot = _run_phase2_window(
+                        phase2_inputs, options, picklable_options_p2, user_workers,
+                        json_writer, all_modules, options_layer, data_writer, gbk_handle,
+                        timings_by_record, lightweight_records, record_summaries,
+                        detection_module_names, phase2_seen, regions_count, failed_count,
+                        trace_snapshot, window_index, phase2_window_size,
+                    )
+                    gc.collect()
+
+            if window_index == 0:
+                logging.info("No records with regions found, skipping Phase 2")
+
+            json_writer.finalize(timings_by_record)
+        finally:
+            if data_writer is not None:
+                data_writer.finalize()
+            elif html_enabled:
+                data_file_path = os.path.join(options.output_dir, "regions_data.js")
+                with open(data_file_path, "w", encoding="utf-8") as empty_data_handle:
+                    StreamingRegionDataWriter(empty_data_handle).finalize()
+            if data_handle is not None:
+                data_handle.close()
+            if gbk_handle is not None:
+                gbk_handle.close()
 
     # Report failures
     if failed_count:
@@ -1469,20 +1757,26 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
     # HTML finalization (overview page + dashboard) — uses lightweight data only
     html_start = time.time()
-    if html_enabled and record_layers_with_regions:
-        # Sort by record index for deterministic output order
-        record_layers_with_regions.sort(
-            key=lambda rl: rl.seq_record.record_index or 0)
-
+    if html_enabled:
         taxonomy_mapping: Dict[str, str] = {}
         if options.html_taxonomy:
             taxonomy_mapping = parse_taxonomy_file(options.html_taxonomy)
 
-        finalize_html_output(
-            lightweight_records, record_layers_with_regions,
-            [], results_by_record_id,
+        finalize_streaming_html_output(
+            lightweight_records, record_summaries,
             options, all_modules, taxonomy_mapping=taxonomy_mapping,
             skipped_record_count=skipped_count,
+        )
+        trace_snapshot = _log_parent_memory(
+            "html-finalize-complete",
+            options,
+            extra={
+                "regions_count": regions_count,
+                "stored_record_summaries": len(record_summaries),
+                "stored_lightweight_records": len(lightweight_records),
+                "skipped": skipped_count,
+            },
+            trace_snapshot=trace_snapshot,
         )
         html_duration = (time.time() - html_start) / max(regions_count, 1)
         for val in timings_by_record.values():
@@ -1503,6 +1797,17 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         assert os.path.exists(zipfile)
 
     running_time = datetime.now() - start_time
+    trace_snapshot = _log_parent_memory(
+        "streaming-complete",
+        options,
+        extra={
+            "processed": total_processed,
+            "regions_count": regions_count,
+            "without_regions": total_without_regions,
+            "failed": failed_count,
+        },
+        trace_snapshot=trace_snapshot,
+    )
 
     if options.debug:
         log_module_runtimes(timings_by_record)
@@ -1535,7 +1840,7 @@ def _create_picklable_options(options: ConfigType) -> ConfigType:
     return picklable_options
 
 
-METASMASH_BUILD = "ms-build-5"
+METASMASH_BUILD = "ms-build-7.5"
 
 
 def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:

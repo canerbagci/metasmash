@@ -42,6 +42,28 @@ class TestConfig(unittest.TestCase):
         config = update_config(options)
         assert config.taxon == 'fungi'
 
+    def test_memory_diagnostics_args(self):
+        options = self.core_parser.parse_args([
+            '--memory-diagnostics',
+            '--memory-diagnostics-interval', '25',
+            '--memory-diagnostics-tracemalloc',
+        ])
+        assert options.memory_diagnostics is True
+        assert options.memory_diagnostics_interval == 25
+        assert options.memory_diagnostics_tracemalloc is True
+
+    def test_streaming_phase2_window_size_arg(self):
+        options = self.core_parser.parse_args([
+            '--streaming-phase2-window-size', '256',
+        ])
+        assert options.streaming_phase2_window_size == 256
+
+    def test_streaming_phase1_batch_size_arg(self):
+        options = self.core_parser.parse_args([
+            '--streaming-phase1-batch-size', '512',
+        ])
+        assert options.streaming_phase1_batch_size == 512
+
     def test_namespace_initialisation(self):
         # test intialisation from namespace
         namespace = Namespace()

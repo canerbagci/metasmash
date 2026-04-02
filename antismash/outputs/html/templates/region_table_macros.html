@@ -64,7 +64,7 @@
  {{ table_header() }}
  <tbody>
  {% for region in record.regions -%}
-  {{ region_row(region, loop.cycle('odd', 'even'), (multi_record and record.record_index) or 0, options, get_region_css(region)) }}
+  {{ region_row(region, loop.cycle('odd', 'even'), (multi_record and record.record_index) or 0, options, (region.css_class if region.css_class is defined else get_region_css(region))) }}
  {% endfor %}
  </tbody>
 </table>
@@ -77,7 +77,7 @@
  {% set style = cycler('odd', 'even') %}
  {% for record in records %}
   {% for region in record.regions -%}
-   {{ region_row(region, style.next(), record.record_index, options, get_region_css(region)) }}
+   {{ region_row(region, style.next(), record.record_index, options, (region.css_class if region.css_class is defined else get_region_css(region))) }}
   {% endfor %}
  {% endfor %}
  </tbody>

@@ -639,6 +639,20 @@ def advanced_options() -> ModuleArgs:
                      help="Streaming record processing mode: 'auto' enables streaming for "
                           "large inputs (>10 records), 'on' forces streaming, 'off' uses "
                           "classic pipeline. (default: %(default)s)")
+    group.add_option('--streaming-phase1-batch-size',
+                     dest='streaming_phase1_batch_size',
+                     type=int,
+                     default=0,
+                     help="Override the streaming Phase 1 detection batch size. "
+                          "0 keeps the automatic default. "
+                          "(default: %(default)s)")
+        group.add_option('--streaming-phase2-window-size',
+                     dest='streaming_phase2_window_size',
+                     type=int,
+                     default=0,
+                     help="Override the streaming Phase 2 window size. "
+                          "0 keeps the automatic default. "
+                          "(default: %(default)s)")
     group.add_option("--remove-existing-annotations",
                      dest="remove_existing_annotations",
                      action=argparse.BooleanOptionalAction,
@@ -714,6 +728,21 @@ def debug_options() -> ModuleArgs:
                      action=argparse.BooleanOptionalAction,
                      default=True,
                      help="Create a GenBank file for each region (default: %(default)s)")
+    group.add_option('--memory-diagnostics',
+                     dest='memory_diagnostics',
+                     action=argparse.BooleanOptionalAction,
+                     default=False,
+                     help="Log parent/worker RSS and retained-object counts during streaming runs")
+    group.add_option('--memory-diagnostics-interval',
+                     dest='memory_diagnostics_interval',
+                     type=int,
+                     default=100,
+                     help="Log streaming memory diagnostics every N records (default: %(default)s)")
+    group.add_option('--memory-diagnostics-tracemalloc',
+                     dest='memory_diagnostics_tracemalloc',
+                     action=argparse.BooleanOptionalAction,
+                     default=False,
+                     help="Capture tracemalloc snapshots alongside --memory-diagnostics")
     return group
 
 

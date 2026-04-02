@@ -28,6 +28,7 @@ from antismash.outputs.html import js
 from antismash.custom_typing import AntismashModule, VisualisationModule
 
 from .visualisers import gene_table
+from .streaming_summary import StreamingRecordSummary
 
 TEMPLATE_PATH = path.get_full_path(__file__, "templates")
 
@@ -515,7 +516,7 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
                                       options: ConfigType, all_modules: List[AntismashModule],
                                       options_layer: OptionsLayer,
                                       data_writer: Optional[StreamingRegionDataWriter] = None,
-                                      ) -> Tuple[Dict[str, Any], Optional[RecordLayer]]:
+                                      ) -> Tuple[Dict[str, Any], Optional[StreamingRecordSummary]]:
     """ Streaming entry point: process a single record and write its per-region
         data immediately. Returns lightweight record metadata for the index
         and the RecordLayer (or None if no regions).
@@ -531,7 +532,7 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
         Returns:
             a tuple of
                 lightweight JSON record dict (for the regions.js index),
-                RecordLayer if the record has regions (else None)
+                StreamingRecordSummary if the record has regions (else None)
     """
     # Build JSON data for this record
     json_record, js_results = _build_json_data_for_record(record, record_results, options, all_modules)
@@ -577,7 +578,90 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
                 options_layer, svg_tooltip,
             )
 
-    return light_record, record_layer
+    return light_record, StreamingRecordSummary.from_record_layer(record_layer)
+
+
+def generate_streaming_dashboard(record_summaries: List[StreamingRecordSummary],
+                                 options_layer: OptionsLayer, page_title: str,
+                                 taxonomy_mapping: Optional[Dict[str, str]] = None,
+                                 skipped_record_count: int = 0,
+                                 ) -> str:
+    """Generates the dashboard HTML page from lightweight streaming summaries."""
+    from markupsafe import Markup
+    from antismash.outputs.html.dashboard import build_dashboard_data_from_summaries
+
+    template = FileTemplate(os.path.join(TEMPLATE_PATH, "dashboard.html"))
+    data = build_dashboard_data_from_summaries(
+        record_summaries,
+        taxonomy_mapping=taxonomy_mapping or {},
+        skipped_record_count=skipped_record_count,
+    )
+    has_taxonomy = bool(taxonomy_mapping)
+
+    content = template.render(
+        options=options_layer,
+        page_title=page_title,
+        data=data,
+        dashboard_json=Markup(json.dumps(data)),
+        has_taxonomy=has_taxonomy,
+    )
+    return content
+
+
+def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
+                                   record_summaries: List[StreamingRecordSummary],
+                                   options: ConfigType, all_modules: List[AntismashModule],
+                                   taxonomy_mapping: Optional[Dict[str, str]] = None,
+                                   skipped_record_count: int = 0,
+                                   ) -> None:
+    """Streaming finalization that uses lightweight record summaries only."""
+    options_layer = OptionsLayer(options, all_modules)
+
+    regions_index: Dict[str, Any] = {"order": []}
+    for light_record in lightweight_records:
+        for light_region in light_record["regions"]:
+            anchor = light_region["anchor"]
+            regions_index[anchor] = light_region
+            regions_index["order"].append(anchor)
+
+    _write_regions_index(lightweight_records, regions_index, options.output_dir)
+
+    sorted_records = sorted(record_summaries, key=lambda record: record.record_index)
+
+    regions_written = sum(len(record.regions) for record in sorted_records)
+    job_id = os.path.basename(options.output_dir)
+    page_title = options.output_basename
+    if options.html_title:
+        page_title = options.html_title
+
+    svg_tooltip = _build_svg_tooltip()
+    as_js_url = build_antismash_js_url(options)
+
+    template = FileTemplate(os.path.join(TEMPLATE_PATH, "overview.html"))
+    regions_content = template.render(
+        records=sorted_records, options=options_layer,
+        version=options.version,
+        regions_written=regions_written, sections={},
+        results_by_record_id={},
+        config=options, job_id=job_id, page_title=page_title,
+        records_without_regions=[],
+        skipped_record_count=skipped_record_count,
+        svg_tooltip=svg_tooltip, get_region_css=js.get_region_css,
+        as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__,
+        lazy_loading=True,
+    )
+    regions_content = _strip_leading_whitespace(regions_content)
+    with open(os.path.join(options.output_dir, "regions.html"), "w", encoding="utf-8") as fh:
+        fh.write(regions_content)
+
+    dashboard_content = generate_streaming_dashboard(
+        sorted_records, options_layer, page_title,
+        taxonomy_mapping=taxonomy_mapping,
+        skipped_record_count=skipped_record_count,
+    )
+    dashboard_content = _strip_leading_whitespace(dashboard_content)
+    with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(dashboard_content)
 
 
 def finalize_html_output(lightweight_records: List[Dict[str, Any]],
