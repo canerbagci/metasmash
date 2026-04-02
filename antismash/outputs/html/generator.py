@@ -210,30 +210,20 @@ def _write_compressed_data_file(output_dir: str,
 
 
 def _write_single_region_file(regions_dir: str, anchor: str,
-                               region_json: Dict[str, Any],
-                               module_results: dict[str, dict[str, json.JSONCompatible]],
-                               fragment_template: FileTemplate,
-                               record_layer: RecordLayer,
-                               region_layer: RegionLayer,
-                               results_by_record_id: Dict[str, Dict[str, ModuleResults]],
-                               html_sections: Dict[str, Dict[int, List[HTMLSections]]],
-                               options_layer: OptionsLayer,
-                               svg_tooltip: str) -> None:
-    """ Writes one region's complete .js file: JSON data, module results,
-        and the rendered HTML fragment.
+                              region_json: Dict[str, Any],
+                              module_results: dict[str, dict[str, json.JSONCompatible]],
+                              content: str) -> None:
+    """ Writes one region's complete legacy .js file.
+
+        These per-region files are kept as a compatibility fallback for
+        standalone/local browsing when the single regions_data.js payload is
+        unavailable.
     """
     js_path = os.path.join(regions_dir, f"{anchor}.js")
     with open(js_path, "w", encoding="utf-8") as fh:
         fh.write(f"all_regions[{json.dumps(anchor)}] = {json.dumps(region_json)};\n")
         if anchor in module_results:
             fh.write(f"resultsData[{json.dumps(anchor)}] = {json.dumps(module_results[anchor])};\n")
-        content = fragment_template.render(
-            record=record_layer, region=region_layer, options=options_layer,
-            results_by_record_id=results_by_record_id,
-            sections=html_sections,
-            svg_tooltip=svg_tooltip,
-            tta_name=tta.__name__, tfbs_name=tfbs.__name__,
-        )
         fh.write(f"regionHTML[{json.dumps(anchor)}] = {json.dumps(content)};\n")
 
 
@@ -282,6 +272,11 @@ def _write_all_region_data(record_layers: List[RecordLayer],
         html_sections, options_layer, svg_tooltip,
     )
     _write_compressed_data_file(options.output_dir, per_region_json, module_results, region_html)
+    regions_dir = _ensure_regions_dir(options.output_dir)
+    for anchor, content in region_html.items():
+        _write_single_region_file(
+            regions_dir, anchor, per_region_json[anchor], module_results, content,
+        )
 
 
 def write_regions_js(records: List[Dict[str, Any]], output_dir: str,
@@ -568,15 +563,10 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
                 js_results.get(anchor, {}),
                 content,
             )
-        else:
-            # Fallback: write individual files
-            regions_dir = _ensure_regions_dir(options.output_dir)
-            _write_single_region_file(
-                regions_dir, anchor, json_region, js_results,
-                fragment_template, record_layer, region_layer,
-                results_by_record_id, html_sections,
-                options_layer, svg_tooltip,
-            )
+        regions_dir = _ensure_regions_dir(options.output_dir)
+        _write_single_region_file(
+            regions_dir, anchor, json_region, js_results, content,
+        )
 
     return light_record, StreamingRecordSummary.from_record_layer(record_layer)
 

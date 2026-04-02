@@ -646,7 +646,7 @@ def advanced_options() -> ModuleArgs:
                      help="Override the streaming Phase 1 detection batch size. "
                           "0 keeps the automatic default. "
                           "(default: %(default)s)")
-        group.add_option('--streaming-phase2-window-size',
+    group.add_option('--streaming-phase2-window-size',
                      dest='streaming_phase2_window_size',
                      type=int,
                      default=0,

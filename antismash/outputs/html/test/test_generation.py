@@ -47,6 +47,23 @@ class TestOutput(unittest.TestCase):
             update_config({"output_dir": temp_dir})
             assert generate_webpage([record], [{}], self.options, get_all_modules())
 
+    def test_generate_webpage_writes_legacy_region_files(self):
+        record = DummyRecord(seq="A" * 200)
+        record.record_index = 1
+        record.add_cds_feature(DummyCDS(start=20, end=80, locus_tag="cds1", translation="A" * 20))
+        record.add_protocluster(
+            DummyProtocluster(core_start=30, core_end=50,
+                              product="test-product", product_category="TEST-CATEGORY")
+        )
+        record.create_candidate_clusters()
+        record.create_regions()
+
+        with TemporaryDirectory() as temp_dir:
+            update_config({"output_dir": temp_dir})
+            assert generate_webpage([record], [{}], self.options, get_all_modules())
+            assert os.path.exists(os.path.join(temp_dir, "regions_data.js"))
+            assert os.path.exists(os.path.join(temp_dir, "regions", "r1c1.js"))
+
 
 class TestJavascriptPresence(unittest.TestCase):
     def setUp(self):
@@ -145,6 +162,30 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert region.product_to_category["test-product"] == "TEST-CATEGORY"
         assert region.most_related_area.description == "Known cluster"
         data_writer.write_region.assert_called_once()
+
+    def test_generate_region_files_writes_legacy_region_file_with_data_writer(self):
+        record = self._make_record()
+        options_layer = OptionsLayer(self.options, get_all_modules())
+        data_writer = Mock()
+
+        with TemporaryDirectory() as temp_dir:
+            update_config({"output_dir": temp_dir})
+            with patch.object(generator, "_generate_html_sections_for_record", return_value={1: []}), \
+                 patch.object(generator, "_get_fragment_template",
+                              return_value=Mock(render=Mock(return_value="<div>fragment</div>"))):
+                light_record, summary = generator.generate_region_files_for_record(
+                    record, {}, self.options, get_all_modules(),
+                    options_layer, data_writer=data_writer,
+                )
+
+            assert light_record["regions"][0]["anchor"] == "r7c1"
+            assert summary is not None
+            region_path = os.path.join(temp_dir, "regions", "r7c1.js")
+            assert os.path.exists(region_path)
+            with open(region_path, encoding="utf-8") as handle:
+                content = handle.read()
+            assert 'all_regions["r7c1"]' in content
+            assert 'regionHTML["r7c1"]' in content
 
     def test_build_dashboard_data_from_summaries(self):
         summary = StreamingRecordSummary(
