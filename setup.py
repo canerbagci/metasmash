@@ -109,9 +109,9 @@ setup(
     package_data={
         'antismash': find_data_files(),
     },
-    author='antiSMASH development team',
-    author_email='antismash@secondarymetabolites.org',
-    description='The antibiotics and Secondary Metabolites Analysis Shell.',
+    author='Caner Bağcı',
+    author_email='caner.bagci@uni-tuebingen.de',
+    description='metasmash: scalable metagenome-scale BGC mining, a fork of antiSMASH.',
     long_description=long_description,
     long_description_content_type='text/markdown',
     install_requires=install_requires,
@@ -123,7 +123,7 @@ setup(
         ],
     },
     cmdclass={'test': PyTest},
-    url='https://github.com/antismash/antismash',
+    url='https://github.com/canerbagci/metasmash',
     license='GNU Affero General Public License v3 or later (AGPLv3+)',
     classifiers=[
         'Programming Language :: Python',
