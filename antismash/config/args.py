@@ -176,7 +176,7 @@ class AntismashParser(argparse.ArgumentParser):
     def format_help(self) -> str:
         """Custom help formatter"""
         help_text = f"""
-########### antiSMASH {ANTISMASH_VERSION} #############
+########### metaSMASH {ANTISMASH_VERSION} #############
 
 {self.format_usage()}
 

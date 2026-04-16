@@ -1933,10 +1933,10 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     if options.debug:
         log_module_runtimes(timings_by_record)
 
-    logging.debug("antiSMASH calculation finished at %s; runtime: %s",
+    logging.debug("metaSMASH calculation finished at %s; runtime: %s",
                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(running_time))
 
-    logging.info("antiSMASH status: SUCCESS")
+    logging.info("metaSMASH status: SUCCESS")
     return 0
 
 
@@ -1966,7 +1966,7 @@ METASMASH_BUILD = "ms-build-7.5"
 
 def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     """ The real run_antismash, assumes logging is set up around it """
-    logging.info("antiSMASH version: %s", options.version)
+    logging.info("metaSMASH version: %s", options.version)
     logging.info("MetaSMASH build: %s", METASMASH_BUILD)
     _log_found_executables(options)
 
@@ -2121,10 +2121,10 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     if options.debug:
         log_module_runtimes(results.timings_by_record)
 
-    logging.debug("antiSMASH calculation finished at %s; runtime: %s",
+    logging.debug("metaSMASH calculation finished at %s; runtime: %s",
                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(running_time))
 
-    logging.info("antiSMASH status: SUCCESS")
+    logging.info("metaSMASH status: SUCCESS")
     return 0
 
 
