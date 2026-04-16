@@ -5,6 +5,13 @@ $(document).ready(function () {
         return;
     }
 
+    // Clear stale BGC selection from any prior "View selected" click.
+    // The selection is a one-shot handoff to regions.html; returning to the
+    // dashboard consumes it so the next region-link click shows all regions.
+    sessionStorage.removeItem("antismash_bgc_selection");
+
+    var FILTER_STORAGE_KEY = "antismash_dashboard_filters";
+
     // =========================================================================
     //  Table state
     // =========================================================================
@@ -42,6 +49,70 @@ $(document).ready(function () {
         similarityMin: _filterState.similarityMin,
         similarityMax: _filterState.similarityMax
     };
+
+    // Restore persisted filter state. Must run BEFORE buildChart(),
+    // initMultiSelect(), and the final render so those initial renders pick
+    // up the restored state.
+    (function restoreFilterState() {
+        var raw = sessionStorage.getItem(FILTER_STORAGE_KEY);
+        if (!raw) return;
+        var saved;
+        try { saved = JSON.parse(raw); }
+        catch (e) { sessionStorage.removeItem(FILTER_STORAGE_KEY); return; }
+        if (!saved || typeof saved !== "object") return;
+
+        if (typeof saved.text === "string") _filterState.text = saved.text;
+        if (saved.chartLabel === null || typeof saved.chartLabel === "string") {
+            _filterState.chartLabel = saved.chartLabel;
+        }
+        if (saved.chartViewMode === null || saved.chartViewMode === "type" || saved.chartViewMode === "category") {
+            _filterState.chartViewMode = saved.chartViewMode;
+        }
+        if (saved.edgeMode === "all" || saved.edgeMode === "complete" || saved.edgeMode === "on_edge") {
+            _filterState.edgeMode = saved.edgeMode;
+        }
+
+        // Clamp similarity to current metadata bounds; reset if out of range
+        var lo = _meta.similarity_min || 0;
+        var hi = _meta.similarity_max || 100;
+        if (typeof saved.similarityMin === "number" && typeof saved.similarityMax === "number"
+            && saved.similarityMin <= saved.similarityMax
+            && saved.similarityMin >= lo && saved.similarityMax <= hi) {
+            _filterState.similarityMin = saved.similarityMin;
+            _filterState.similarityMax = saved.similarityMax;
+        }
+
+        // Drop stale type/category names that no longer exist in this dataset
+        var productsList = _meta.products_list || [];
+        var categoriesList = _meta.categories_list || [];
+        if (Array.isArray(saved.selectedTypes)) {
+            _filterState.selectedTypes = saved.selectedTypes.filter(function (t) {
+                return productsList.indexOf(t) > -1;
+            });
+        }
+        if (Array.isArray(saved.selectedCategories)) {
+            _filterState.selectedCategories = saved.selectedCategories.filter(function (c) {
+                return categoriesList.indexOf(c) > -1;
+            });
+        }
+    })();
+
+    // Sync static UI controls to restored state
+    if (_filterState.text) {
+        $("#bgc-filter").val(_filterState.text);
+    }
+    if (_filterState.edgeMode !== "all") {
+        $("#adv-edge-toggle .adv-toggle-btn").removeClass("adv-toggle-active");
+        $('#adv-edge-toggle [data-edge="' + _filterState.edgeMode + '"]').addClass("adv-toggle-active");
+    }
+
+    function persistFilterState() {
+        try {
+            sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(_filterState));
+        } catch (e) {
+            // quota exceeded or storage disabled — silently ignore
+        }
+    }
 
     function applyAllFilters() {
         var text = _filterState.text ? _filterState.text.toLowerCase() : "";
@@ -114,6 +185,7 @@ $(document).ready(function () {
         }
 
         renderChips();
+        persistFilterState();
     }
 
     // =========================================================================
@@ -492,11 +564,17 @@ $(document).ready(function () {
                 }
             });
             $container.append($btn);
+            if (_filterState.chartLabel === label) {
+                $container.find(".chart-filter-all").removeClass("chart-filter-active");
+                $btn.addClass("chart-filter-active");
+            }
         });
     }
 
     if (chartCanvas && dashboardData.summary.total_bgcs > 0) {
-        buildChart("category");
+        var initialChartMode = _filterState.chartViewMode || "category";
+        $("#chart-view-toggle").val(initialChartMode);
+        buildChart(initialChartMode);
 
         $("#chart-view-toggle").on("change", function () {
             _filterState.chartLabel = null;
@@ -904,5 +982,5 @@ $(document).ready(function () {
     // =========================================================================
     //  Initial render
     // =========================================================================
-    renderPage();
+    applyAllFilters();
 });

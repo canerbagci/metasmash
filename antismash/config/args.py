@@ -743,6 +743,17 @@ def debug_options() -> ModuleArgs:
                      action=argparse.BooleanOptionalAction,
                      default=False,
                      help="Capture tracemalloc snapshots alongside --memory-diagnostics")
+    group.add_option('--cpu-diagnostics',
+                     dest='cpu_diagnostics',
+                     action=argparse.BooleanOptionalAction,
+                     default=False,
+                     help="Log parent/descendant CPU seconds and effective CPU "
+                          "utilisation at each diagnostics checkpoint")
+    group.add_option('--cpu-diagnostics-interval',
+                     dest='cpu_diagnostics_interval',
+                     type=int,
+                     default=100,
+                     help="Log streaming CPU diagnostics every N records (default: %(default)s)")
     return group
 
 

@@ -8,6 +8,7 @@ import functools
 import logging
 import os
 import re
+import time
 from contextlib import contextmanager
 from typing import Any, Dict, Callable, Generator, Iterable, Iterator, List, Optional, Set, Tuple
 import warnings
@@ -679,7 +680,9 @@ def scan_record_metadata(filename: str, minimum_length: int = -1,
         Returns:
             a list of (record_id, sequence_length) tuples
     """
-    logging.info("Scanning record metadata from %r", filename)
+    logging.info("Scanning record metadata from %r (single-threaded Biopython parse)",
+                 filename)
+    scan_start = time.monotonic()
     max_id_len = os.pathconf("/", "PC_NAME_MAX") - len(".region000.gbk")
     metadata: List[Tuple[str, int]] = []
     found_any = False
@@ -743,7 +746,13 @@ def scan_record_metadata(filename: str, minimum_length: int = -1,
         raise AntismashInputError(
             f"all input records smaller than minimum length ({minimum_length})")
 
-    logging.info("Scanned %d accepted records from %r", len(metadata), filename)
+    scan_elapsed = time.monotonic() - scan_start
+    rate = len(metadata) / scan_elapsed if scan_elapsed > 0 else 0.0
+    logging.info(
+        "Scanned %d accepted records from %r in %.1fs (%.0f records/s, "
+        "single-threaded Biopython parse)",
+        len(metadata), filename, scan_elapsed, rate,
+    )
     return metadata
 
 

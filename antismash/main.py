@@ -34,7 +34,14 @@ from antismash.config import (
     get_config,
     update_config,
 )
-from antismash.common import errors, logs, memory as memory_diagnostics, record_processing, serialiser
+from antismash.common import (
+    cpu_diagnostics,
+    errors,
+    logs,
+    memory as memory_diagnostics,
+    record_processing,
+    serialiser,
+)
 from antismash.common.errors import AntismashInputError
 from antismash.common.module_results import ModuleResults, DetectionResults
 from antismash.common.path import get_full_path
@@ -949,6 +956,7 @@ def process_record_full(record_tuple: tuple, options: ConfigType) -> tuple:
 
 
 _RECORD_FAILED = "__RECORD_PROCESSING_FAILED__"  # sentinel for records that failed in parallel processing
+_RECORD_NO_REGIONS = "__RECORD_NO_REGIONS__"  # lightweight sentinel: record had no regions and can be skipped
 
 
 def _format_worker_memory_delta(before_mb: Optional[float], after_mb: Optional[float]) -> str:
@@ -1011,6 +1019,19 @@ def _log_parent_memory(label: str, options: ConfigType,
     if memory_diagnostics.tracemalloc_enabled(options):
         return memory_diagnostics.maybe_log_tracemalloc(label, trace_snapshot)
     return trace_snapshot
+
+
+def _log_parent_cpu(label: str, options: ConfigType,
+                    extra: Optional[Dict[str, Union[int, str]]] = None) -> None:
+    """ Log parent-side CPU diagnostics for streaming runs.
+
+        Mirrors :func:`_log_parent_memory` and emits a sibling
+        ``cpudiag parent <label> ...`` line whenever the user passes
+        ``--cpu-diagnostics``. The interesting field is ``effective_cpus``:
+        if it drops well below ``options.cpus`` between two checkpoints,
+        that interval was bottlenecked on a single thread.
+    """
+    cpu_diagnostics.log_parent_sample(label, options, extra=extra)
 
 
 def _safe_process_record_full(record_tuple, options):
@@ -1100,6 +1121,16 @@ def process_record_detection_streaming(record_tuple: tuple, options: ConfigType)
         logging.error("Detection failed for record %s: %s", record.id, str(e))
         raise
 
+    # If the record has no regions and the user asked to skip regionless
+    # output, return a lightweight sentinel instead of the full Record.
+    # This avoids pickling the entire Record + module_results back through
+    # the multiprocessing queue for the ~94% of records that will be
+    # immediately discarded by the parent — eliminating a ~6-minute
+    # single-core drain tail per 20k-record batch.
+    if (not record.get_regions()
+            and getattr(options, 'output_skip_records_without_regions', False)):
+        return _RECORD_NO_REGIONS, record.id, timings
+
     return record, module_results, timings
 
 
@@ -1110,6 +1141,8 @@ def _safe_process_record_detection_streaming(record_tuple, options):
     rss_before_mb = memory_diagnostics.current_rss_mb() if memory_diagnostics.diagnostics_enabled(options) else None
     try:
         result = process_record_detection_streaming(record_tuple, options)
+        if result[0] == _RECORD_NO_REGIONS:
+            return result  # lightweight, skip worker memdiag
         record, _, timings = result
         _log_worker_memory("detection", record, options, rss_before_mb, timings=timings)
         return result
@@ -1195,6 +1228,9 @@ def _preload_pfam_caches(options: ConfigType) -> None:
     """
     from antismash.common import pfamdb
 
+    logging.info("Preloading PFAM caches (single-threaded, parent process)")
+    preload_start = time.monotonic()
+
     pfamdb.init_shared_cache()
 
     if hasattr(options, 'clusterhmmer') and options.clusterhmmer:
@@ -1212,6 +1248,8 @@ def _preload_pfam_caches(options: ConfigType) -> None:
         database = os.path.join(options.database_dir, 'pfam', database_version, 'Pfam-A.hmm')
         pfamdb.preload_pfam_cutoffs(database)
         pfamdb.preload_pfam_mappings(database)
+
+    logging.info("Preloaded PFAM caches in %.1fs", time.monotonic() - preload_start)
 
 
 def _preload_analysis_caches(options: ConfigType) -> None:
@@ -1306,20 +1344,22 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
     effective_threads = max(1, options.cpus // user_workers)
     logging.info("Phase 2 window %d: Analysis of %d records with %d workers x %d threads",
                  window_index, len(phase2_inputs), user_workers, effective_threads)
+    phase2_window_start_extra: Dict[str, Union[int, str]] = {
+        "window_index": window_index,
+        "window_size": window_size,
+        "pending_phase2": len(phase2_inputs),
+        "workers": user_workers,
+        "threads_per_worker": effective_threads,
+        "stored_record_summaries": len(record_summaries),
+        "stored_lightweight_records": len(lightweight_records),
+    }
     trace_snapshot = _log_parent_memory(
         "phase2-window-start",
         options,
-        extra={
-            "window_index": window_index,
-            "window_size": window_size,
-            "pending_phase2": len(phase2_inputs),
-            "workers": user_workers,
-            "threads_per_worker": effective_threads,
-            "stored_record_summaries": len(record_summaries),
-            "stored_lightweight_records": len(lightweight_records),
-        },
+        extra=phase2_window_start_extra,
         trace_snapshot=trace_snapshot,
     )
+    _log_parent_cpu("phase2-window-start", options, extra=phase2_window_start_extra)
 
     def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType]]:
         record_ids = list(phase2_inputs.keys())
@@ -1342,21 +1382,23 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
             failed_count += 1
             if (memory_diagnostics.diagnostics_enabled(options)
                     and phase2_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                phase2_progress_extra: Dict[str, Union[int, str]] = {
+                    "window_index": window_index,
+                    "window_size": window_size,
+                    "seen": phase2_seen,
+                    "completed": regions_count,
+                    "pending_phase2": len(phase2_inputs),
+                    "stored_record_summaries": len(record_summaries),
+                    "stored_lightweight_records": len(lightweight_records),
+                    "failed": failed_count,
+                }
                 trace_snapshot = _log_parent_memory(
                     "phase2-progress",
                     options,
-                    extra={
-                        "window_index": window_index,
-                        "window_size": window_size,
-                        "seen": phase2_seen,
-                        "completed": regions_count,
-                        "pending_phase2": len(phase2_inputs),
-                        "stored_record_summaries": len(record_summaries),
-                        "stored_lightweight_records": len(lightweight_records),
-                        "failed": failed_count,
-                    },
+                    extra=phase2_progress_extra,
                     trace_snapshot=trace_snapshot,
                 )
+                _log_parent_cpu("phase2-progress", options, extra=phase2_progress_extra)
             continue
 
         record, mod_results, analysis_timings = item
@@ -1405,37 +1447,41 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
 
         if (memory_diagnostics.diagnostics_enabled(options)
                 and phase2_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+            phase2_progress_extra = {
+                "window_index": window_index,
+                "window_size": window_size,
+                "seen": phase2_seen,
+                "completed": regions_count,
+                "pending_phase2": len(phase2_inputs),
+                "stored_record_summaries": len(record_summaries),
+                "stored_lightweight_records": len(lightweight_records),
+                "failed": failed_count,
+            }
             trace_snapshot = _log_parent_memory(
                 "phase2-progress",
                 options,
-                extra={
-                    "window_index": window_index,
-                    "window_size": window_size,
-                    "seen": phase2_seen,
-                    "completed": regions_count,
-                    "pending_phase2": len(phase2_inputs),
-                    "stored_record_summaries": len(record_summaries),
-                    "stored_lightweight_records": len(lightweight_records),
-                    "failed": failed_count,
-                },
+                extra=phase2_progress_extra,
                 trace_snapshot=trace_snapshot,
             )
+            _log_parent_cpu("phase2-progress", options, extra=phase2_progress_extra)
 
+    phase2_window_complete_extra: Dict[str, Union[int, str]] = {
+        "window_index": window_index,
+        "window_size": window_size,
+        "seen": phase2_seen,
+        "completed": regions_count,
+        "pending_phase2": len(phase2_inputs),
+        "stored_record_summaries": len(record_summaries),
+        "stored_lightweight_records": len(lightweight_records),
+        "failed": failed_count,
+    }
     trace_snapshot = _log_parent_memory(
         "phase2-window-complete",
         options,
-        extra={
-            "window_index": window_index,
-            "window_size": window_size,
-            "seen": phase2_seen,
-            "completed": regions_count,
-            "pending_phase2": len(phase2_inputs),
-            "stored_record_summaries": len(record_summaries),
-            "stored_lightweight_records": len(lightweight_records),
-            "failed": failed_count,
-        },
+        extra=phase2_window_complete_extra,
         trace_snapshot=trace_snapshot,
     )
+    _log_parent_cpu("phase2-window-complete", options, extra=phase2_window_complete_extra)
     return phase2_seen, regions_count, failed_count, trace_snapshot
 
 
@@ -1473,6 +1519,8 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     # --- Pass 1: scan metadata (id, length) without retaining sequences ---
     if prefetched_metadata is not None:
         metadata = prefetched_metadata
+        logging.info("Reusing prefetched metadata for %d records (no rescan)",
+                     len(metadata))
     else:
         metadata = record_processing.scan_record_metadata(
             sequence_file, options.minlength,
@@ -1480,8 +1528,16 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         )
     update_config({"input_file": os.path.splitext(os.path.basename(sequence_file))[0]})
 
+    # Single-threaded setup window: id resolution + output dir + html assets
+    # + pfam preload + gc.freeze. Time it so the user can see how much
+    # single-core wall time is spent here before workers start.
+    setup_start = time.monotonic()
+
     # Resolve IDs (dedup, shorten, apply --limit_to_record / --limit)
+    resolve_start = time.monotonic()
     accepted_ids, accepted_count = record_processing.resolve_record_ids(metadata, options)
+    logging.info("Resolved %d accepted record ids in %.1fs (single-threaded, in-memory)",
+                 accepted_count, time.monotonic() - resolve_start)
     del metadata  # free ~660 MB for 11M records
 
     if accepted_count == 0:
@@ -1557,49 +1613,68 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     data_writer = None
     gbk_handle = None
 
+    logging.info(
+        "Streaming setup complete (resolve_ids + output_dir + pfam_preload + "
+        "gc.freeze) in %.1fs; entering phase 1 batch loop",
+        time.monotonic() - setup_start,
+    )
+
     logging.debug("Writing streaming json results to '%s'", json_filename)
+    streaming_start_extra: Dict[str, Union[int, str]] = {
+        "accepted_count": accepted_count,
+        "workers": options.cpus,
+        "analysis_workers": user_workers,
+        "phase1_batch_size": phase1_batch_size,
+        "window_size": phase2_window_size,
+    }
     trace_snapshot = _log_parent_memory(
         "streaming-start",
         options,
-        extra={
-            "accepted_count": accepted_count,
-            "workers": options.cpus,
-            "analysis_workers": user_workers,
-            "phase1_batch_size": phase1_batch_size,
-            "window_size": phase2_window_size,
-        },
+        extra=streaming_start_extra,
         trace_snapshot=trace_snapshot,
     )
+    _log_parent_cpu("streaming-start", options, extra=streaming_start_extra)
     with open(json_filename, "w", encoding="utf-8") as json_handle:
         json_writer = serialiser.StreamingJsonWriter(
             json_handle, input_basename, __version__, options.taxon)
         try:
             while not source_exhausted or phase2_inputs:
                 while not source_exhausted and len(phase2_inputs) < phase2_window_size:
+                    pull_start = time.monotonic()
                     record_batch = _take_record_batch(accepted_records, phase1_batch_size)
+                    pull_elapsed = time.monotonic() - pull_start
                     if not record_batch:
                         source_exhausted = True
                         break
 
                     phase1_batch_index += 1
+                    pull_rate = len(record_batch) / pull_elapsed if pull_elapsed > 0 else 0.0
+                    logging.info(
+                        "Phase 1 batch %d: pulled %d records from input in %.1fs "
+                        "(%.0f records/s, single-threaded Biopython parse — workers idle)",
+                        phase1_batch_index, len(record_batch), pull_elapsed, pull_rate,
+                    )
                     update_config({"workers": options.cpus})
                     logging.info("Phase 1 batch %d: Detection with %d workers x 1 thread over %d records",
                                  phase1_batch_index, options.cpus, len(record_batch))
+                    phase1_batch_start_extra: Dict[str, Union[int, str]] = {
+                        "batch_index": phase1_batch_index,
+                        "batch_size": len(record_batch),
+                        "phase1_batch_size": phase1_batch_size,
+                        "window_size": phase2_window_size,
+                        "pending_phase2": len(phase2_inputs),
+                        "processed": total_processed,
+                        "without_regions": total_without_regions,
+                        "failed": failed_count,
+                    }
                     trace_snapshot = _log_parent_memory(
                         "phase1-batch-start",
                         options,
-                        extra={
-                            "batch_index": phase1_batch_index,
-                            "batch_size": len(record_batch),
-                            "phase1_batch_size": phase1_batch_size,
-                            "window_size": phase2_window_size,
-                            "pending_phase2": len(phase2_inputs),
-                            "processed": total_processed,
-                            "without_regions": total_without_regions,
-                            "failed": failed_count,
-                        },
+                        extra=phase1_batch_start_extra,
                         trace_snapshot=trace_snapshot,
                     )
+                    _log_parent_cpu("phase1-batch-start", options,
+                                    extra=phase1_batch_start_extra)
 
                     def _record_args(batch: List[Tuple[SeqRecord, int]] = record_batch
                                      ) -> Iterator[Tuple[Tuple[SeqRecord, int], ConfigType]]:
@@ -1618,21 +1693,57 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                             failed_count += 1
                             if (memory_diagnostics.diagnostics_enabled(options)
                                     and phase1_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                                phase1_progress_extra: Dict[str, Union[int, str]] = {
+                                    "batch_index": phase1_batch_index,
+                                    "phase1_batch_size": phase1_batch_size,
+                                    "window_size": phase2_window_size,
+                                    "seen": phase1_seen,
+                                    "processed": total_processed,
+                                    "pending_phase2": len(phase2_inputs),
+                                    "without_regions": total_without_regions,
+                                    "failed": failed_count,
+                                }
                                 trace_snapshot = _log_parent_memory(
                                     "phase1-progress",
                                     options,
-                                    extra={
-                                        "batch_index": phase1_batch_index,
-                                        "phase1_batch_size": phase1_batch_size,
-                                        "window_size": phase2_window_size,
-                                        "seen": phase1_seen,
-                                        "processed": total_processed,
-                                        "pending_phase2": len(phase2_inputs),
-                                        "without_regions": total_without_regions,
-                                        "failed": failed_count,
-                                    },
+                                    extra=phase1_progress_extra,
                                     trace_snapshot=trace_snapshot,
                                 )
+                                _log_parent_cpu("phase1-progress", options,
+                                                extra=phase1_progress_extra)
+                            continue
+
+                        # Fast path: workers return a lightweight sentinel
+                        # for records without regions when
+                        # --output-skip-records-without-regions is set.
+                        # This avoids unpickling the full Record and
+                        # skips all per-result I/O for ~94% of records.
+                        if item[0] == _RECORD_NO_REGIONS:
+                            _, record_id, rec_timings = item
+                            total_processed += 1
+                            total_without_regions += 1
+                            if rec_timings:
+                                timings_by_record[record_id] = rec_timings
+                            if (memory_diagnostics.diagnostics_enabled(options)
+                                    and phase1_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                                phase1_progress_extra = {
+                                    "batch_index": phase1_batch_index,
+                                    "phase1_batch_size": phase1_batch_size,
+                                    "window_size": phase2_window_size,
+                                    "seen": phase1_seen,
+                                    "processed": total_processed,
+                                    "pending_phase2": len(phase2_inputs),
+                                    "without_regions": total_without_regions,
+                                    "failed": failed_count,
+                                }
+                                trace_snapshot = _log_parent_memory(
+                                    "phase1-progress",
+                                    options,
+                                    extra=phase1_progress_extra,
+                                    trace_snapshot=trace_snapshot,
+                                )
+                                _log_parent_cpu("phase1-progress", options,
+                                                extra=phase1_progress_extra)
                             continue
 
                         record, mod_results, rec_timings = item
@@ -1655,38 +1766,44 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
                         if (memory_diagnostics.diagnostics_enabled(options)
                                 and phase1_seen % memory_diagnostics.diagnostics_interval(options) == 0):
+                            phase1_progress_extra = {
+                                "batch_index": phase1_batch_index,
+                                "phase1_batch_size": phase1_batch_size,
+                                "window_size": phase2_window_size,
+                                "seen": phase1_seen,
+                                "processed": total_processed,
+                                "pending_phase2": len(phase2_inputs),
+                                "without_regions": total_without_regions,
+                                "failed": failed_count,
+                            }
                             trace_snapshot = _log_parent_memory(
                                 "phase1-progress",
                                 options,
-                                extra={
-                                    "batch_index": phase1_batch_index,
-                                    "phase1_batch_size": phase1_batch_size,
-                                    "window_size": phase2_window_size,
-                                    "seen": phase1_seen,
-                                    "processed": total_processed,
-                                    "pending_phase2": len(phase2_inputs),
-                                    "without_regions": total_without_regions,
-                                    "failed": failed_count,
-                                },
+                                extra=phase1_progress_extra,
                                 trace_snapshot=trace_snapshot,
                             )
+                            _log_parent_cpu("phase1-progress", options,
+                                            extra=phase1_progress_extra)
 
+                    phase1_batch_complete_extra: Dict[str, Union[int, str]] = {
+                        "batch_index": phase1_batch_index,
+                        "batch_size": len(record_batch),
+                        "phase1_batch_size": phase1_batch_size,
+                        "window_size": phase2_window_size,
+                        "seen": phase1_seen,
+                        "processed": total_processed,
+                        "pending_phase2": len(phase2_inputs),
+                        "without_regions": total_without_regions,
+                        "failed": failed_count,
+                    }
                     trace_snapshot = _log_parent_memory(
                         "phase1-batch-complete",
                         options,
-                        extra={
-                            "batch_index": phase1_batch_index,
-                            "batch_size": len(record_batch),
-                            "phase1_batch_size": phase1_batch_size,
-                            "window_size": phase2_window_size,
-                            "seen": phase1_seen,
-                            "processed": total_processed,
-                            "pending_phase2": len(phase2_inputs),
-                            "without_regions": total_without_regions,
-                            "failed": failed_count,
-                        },
+                        extra=phase1_batch_complete_extra,
                         trace_snapshot=trace_snapshot,
                     )
+                    _log_parent_cpu("phase1-batch-complete", options,
+                                    extra=phase1_batch_complete_extra)
                     gc.collect()
 
                     if len(phase2_inputs) >= phase2_window_size:
@@ -1767,17 +1884,19 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
             options, all_modules, taxonomy_mapping=taxonomy_mapping,
             skipped_record_count=skipped_count,
         )
+        html_finalize_extra: Dict[str, Union[int, str]] = {
+            "regions_count": regions_count,
+            "stored_record_summaries": len(record_summaries),
+            "stored_lightweight_records": len(lightweight_records),
+            "skipped": skipped_count,
+        }
         trace_snapshot = _log_parent_memory(
             "html-finalize-complete",
             options,
-            extra={
-                "regions_count": regions_count,
-                "stored_record_summaries": len(record_summaries),
-                "stored_lightweight_records": len(lightweight_records),
-                "skipped": skipped_count,
-            },
+            extra=html_finalize_extra,
             trace_snapshot=trace_snapshot,
         )
+        _log_parent_cpu("html-finalize-complete", options, extra=html_finalize_extra)
         html_duration = (time.time() - html_start) / max(regions_count, 1)
         for val in timings_by_record.values():
             val[html.__name__] = html_duration
@@ -1797,17 +1916,19 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         assert os.path.exists(zipfile)
 
     running_time = datetime.now() - start_time
+    streaming_complete_extra: Dict[str, Union[int, str]] = {
+        "processed": total_processed,
+        "regions_count": regions_count,
+        "without_regions": total_without_regions,
+        "failed": failed_count,
+    }
     trace_snapshot = _log_parent_memory(
         "streaming-complete",
         options,
-        extra={
-            "processed": total_processed,
-            "regions_count": regions_count,
-            "without_regions": total_without_regions,
-            "failed": failed_count,
-        },
+        extra=streaming_complete_extra,
         trace_snapshot=trace_snapshot,
     )
+    _log_parent_cpu("streaming-complete", options, extra=streaming_complete_extra)
 
     if options.debug:
         log_module_runtimes(timings_by_record)
