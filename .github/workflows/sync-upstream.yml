@@ -1,0 +1,140 @@
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      SYNC_BRANCH: upstream-sync
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "$BOT_EMAIL"
+
+      - name: Fetch upstream and existing sync branch
+        run: |
+          git remote add upstream https://github.com/antismash/antismash.git
+          git fetch upstream master
+          git fetch origin "$SYNC_BRANCH" || true
+
+      - name: Count new upstream commits
+        id: check
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/master)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "master is $behind commits behind upstream/master"
+
+      # Preserve manual conflict resolution: skip if the sync branch tip
+      # was last pushed by a human, not the bot.
+      - name: Check for human commits on sync branch
+        id: guard
+        if: steps.check.outputs.behind != '0'
+        run: |
+          skip=false
+          if git rev-parse --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1; then
+            last_email=$(git log -1 --format='%ae' "origin/$SYNC_BRANCH")
+            if [ "$last_email" != "$BOT_EMAIL" ]; then
+              skip=true
+              echo "Sync branch tip is by $last_email (not the bot). Leaving manual work intact."
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure labels exist
+        if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create upstream-sync --color 0e8a16 \
+            --description "Automated sync with upstream antismash/antismash" 2>/dev/null || true
+          gh label create needs-manual-resolution --color d93f0b \
+            --description "Merge conflicts require manual resolution" 2>/dev/null || true
+
+      - name: Merge upstream into sync branch
+        id: merge
+        if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
+        run: |
+          git checkout -B "$SYNC_BRANCH"
+          set +e
+          git merge --no-ff --no-edit \
+            -m "Sync with upstream antismash/antismash" upstream/master
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            git add -A
+            git commit -m "CONFLICTS: upstream sync needs manual resolution"
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
+        run: git push --force-with-lease origin "$SYNC_BRANCH"
+
+      - name: Open or update pull request
+        if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEHIND: ${{ steps.check.outputs.behind }}
+          RESULT: ${{ steps.merge.outputs.result }}
+        run: |
+          if [ "$RESULT" = "clean" ]; then
+            title="Sync with upstream antismash/antismash ($BEHIND commits)"
+            label=upstream-sync
+            body=$(cat <<'EOF'
+          Automated weekly sync of `antismash/antismash@master` into metaSMASH `master`. Merge was clean.
+
+          > **CI does not run automatically on PRs opened by `GITHUB_TOKEN`.**
+          > Trigger checks manually: push an empty commit (`git commit --allow-empty -m re-run && git push`) or close/reopen this PR.
+
+          Clean textual merge does not guarantee semantic correctness — review the diff for upstream changes that touch metaSMASH-specific code (streaming pipeline, diagnostics, dashboard).
+          EOF
+          )
+          else
+            title="[needs resolution] Sync with upstream antismash/antismash ($BEHIND commits)"
+            label=needs-manual-resolution
+            body=$(cat <<'EOF'
+          Automated weekly sync of `antismash/antismash@master` into metaSMASH `master` — **merge had conflicts**.
+
+          The branch contains conflict markers committed as-is so the PR diff shows exactly what collided.
+
+          To resolve:
+          ```sh
+          git fetch origin upstream-sync
+          git checkout upstream-sync
+          # edit files to resolve conflict markers
+          git add <files>
+          git commit --amend --no-edit
+          git push --force-with-lease
+          ```
+
+          The bot won't overwrite your branch once it sees a non-bot commit on the tip, so your resolution is safe across future runs.
+
+          CI does not auto-run on bot PRs — push an empty commit or close/reopen after resolving to trigger checks.
+          EOF
+          )
+          fi
+
+          existing=$(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number')
+          if [ -z "$existing" ]; then
+            gh pr create --base master --head "$SYNC_BRANCH" \
+              --title "$title" --body "$body" \
+              --assignee canerbagci --label "$label"
+          else
+            gh pr edit "$existing" --title "$title" --body "$body" --add-label "$label"
+          fi
