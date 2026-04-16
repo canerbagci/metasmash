@@ -23,8 +23,10 @@ jobs:
           pip install -e .[testing]
 
       - name: Run metaSMASH-specific unit tests
+        # test_executables_default requires hmmscan/diamond/prodigal on PATH — not installed on a bare runner.
         run: |
           pytest --durations=3 \
+            --deselect antismash/config/test/test_args.py::TestExecutableArg::test_executables_default \
             antismash/common/test/test_cpu_diagnostics.py \
             antismash/common/test/test_streaming.py \
             antismash/outputs/html/test/test_taxonomy.py \

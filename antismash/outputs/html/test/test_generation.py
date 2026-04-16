@@ -120,7 +120,9 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         record.record_index = 7
         record.original_id = "original-record-1"
         record.annotations["source"] = "test-source"
-        record.add_cds_feature(DummyCDS(start=20, end=80, locus_tag="cds1", translation="A" * 20))
+        # CDS end aligns with the protocluster neighbourhood (core 30-50 + range 10 => region 20-60),
+        # so secmet populates region.cds_children — required for gene_count to be non-zero.
+        record.add_cds_feature(DummyCDS(start=20, end=60, locus_tag="cds1", translation="A" * 20))
         record.add_protocluster(
             DummyProtocluster(core_start=30, core_end=50,
                               product="test-product", product_category="TEST-CATEGORY")
