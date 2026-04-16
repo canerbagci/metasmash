@@ -1,0 +1,32 @@
+name: typecheck
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install metaSMASH with testing extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[testing]
+
+      - name: Run mypy on metaSMASH-specific modules
+        continue-on-error: true
+        run: |
+          mypy \
+            antismash/common/cpu_diagnostics.py \
+            antismash/common/memory.py \
+            antismash/outputs/html/streaming_summary.py \
+            antismash/outputs/html/taxonomy.py \
+            antismash/outputs/html/dashboard.py

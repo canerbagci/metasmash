@@ -1,10 +1,4 @@
-# Each line is a file pattern followed by one or more owners.
+# Default owners for the metaSMASH fork.
+# These owners are requested for review when a pull request is opened.
 
-# These owners will be the default owners for everything in
-# the repo. Unless a later match takes precedence,
-# @global-owner1 and @global-owner2 will be requested for
-# review when someone opens a pull request.
-
-# *, meaning every part of the repo, is owned by the whole
-# team so they're the default reviewers
-* @antismash/antismash-developers
+* @canerbagci
