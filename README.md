@@ -53,8 +53,11 @@ metasmash --streaming off input.fasta
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--streaming {auto,on,off}` | `auto` | `auto` enables streaming for >10 records, `on` forces it, `off` uses classic pipeline |
+| `--streaming-phase1-batch-size N` | `0` (auto) | Override records-per-batch in streaming Phase 1 (detection). `0` keeps the automatic heuristic. |
+| `--streaming-phase2-window-size N` | `0` (auto) | Override the Phase 2 analysis window size. `0` keeps the automatic heuristic. |
 | `--workers W` | same as `--cpus` | Number of parallel worker processes. Each worker gets `cpus/workers` threads. Lower values reduce peak memory. |
 | `--output-skip-records-without-regions` / `--no-output-skip-records-without-regions` | on | Omit records without detected BGC regions from JSON/GBK output |
+| `--html-taxonomy PATH` | *(none)* | Two-column TSV mapping contig IDs to taxonomy lineages; rendered in the dashboard overview table. |
 
 All standard antiSMASH options (e.g. `--cpus`, `--genefinding-tool`, `--cb-knownclusters`, `--minimal`) work as usual. Run `metasmash --help` for the full list, or see the [upstream documentation](https://docs.antismash.secondarymetabolites.org/).
 
