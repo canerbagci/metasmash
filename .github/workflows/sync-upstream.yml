@@ -16,6 +16,7 @@ jobs:
     env:
       BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
       SYNC_BRANCH: upstream-sync
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
