@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   sync:
@@ -59,10 +60,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh label create upstream-sync --color 0e8a16 \
-            --description "Automated sync with upstream antismash/antismash" 2>/dev/null || true
-          gh label create needs-manual-resolution --color d93f0b \
-            --description "Merge conflicts require manual resolution" 2>/dev/null || true
+          ensure_label() {
+            local name=$1 color=$2 desc=$3
+            local out
+            if out=$(gh label create "$name" --color "$color" --description "$desc" 2>&1); then
+              return 0
+            fi
+            if echo "$out" | grep -qi 'already exists'; then
+              echo "Label '$name' already exists, continuing."
+              return 0
+            fi
+            echo "Failed to create label '$name': $out" >&2
+            return 1
+          }
+          ensure_label upstream-sync 0e8a16 "Automated sync with upstream antismash/antismash"
+          ensure_label needs-manual-resolution d93f0b "Merge conflicts require manual resolution"
 
       - name: Merge upstream into sync branch
         id: merge
