@@ -53,6 +53,7 @@ from antismash.support import genefinding
 from antismash.custom_typing import AntismashModule
 
 __version__ = "0.1.1"
+UPSTREAM_VERSION = "8.0.4"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml
 
 
 def _gather_analysis_modules() -> List[AntismashModule]:
@@ -429,8 +430,9 @@ def add_antismash_comments(records: List[Tuple[Record, SeqRecord]], options: Con
     if not records:
         return
     base_comment = {
-        "Version": str(options.version),
-        "Run date": str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        "Version": UPSTREAM_VERSION,
+        "metaSMASH Version": str(options.version),
+        "Run date": str(datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
     }
     # include start/end details if relevant
     if options.start != -1 or options.end != -1:

@@ -15,9 +15,20 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: setup.py
+          cache-dependency-path: |
+            setup.py
+            .github/workflows/test.yml
 
       - name: Install metaSMASH with testing extras
+        # MOODS-python publishes only an sdist; pip builds a wheel locally and
+        # the actions/setup-python cache reuses it across runs. GitHub Actions
+        # runners have heterogeneous CPUs (Intel/AMD, varying instruction
+        # sets), so a wheel built on a runner with AVX/AVX2 SIGILLs when
+        # imported on a leaner runner. Build for the x86_64 baseline so the
+        # cached wheel runs on every runner.
+        env:
+          CFLAGS: -O2 -march=x86-64
+          CXXFLAGS: -O2 -march=x86-64
         run: |
           python -m pip install --upgrade pip
           pip install -e .[testing]

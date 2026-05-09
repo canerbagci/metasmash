@@ -40,13 +40,15 @@ class RegionData:
         return self.start > self.end
 
 
-def _build_annotations(region: RegionData, original_annotations: dict[str, Any]) -> dict[str, Any]:
+def _build_annotations(region: RegionData, original_annotations: dict[str, Any],
+                       record_length: int) -> dict[str, Any]:
     """ Builds a new set of annotations from the given annotations and the relevant
         region data.
 
         Arguments:
             region: the details of the region being annotated
             original_annotations: the annotations of the full-genome record, as in a SeqRecord
+            record_length: the length of the parent record the region was extracted from
 
         Returns:
             the annotations in a SeqRecord-compatible dictionary
@@ -70,6 +72,7 @@ def _build_annotations(region: RegionData, original_annotations: dict[str, Any])
 
     antismash_comment["Orig. start"] = str(region.start)
     antismash_comment["Orig. end"] = str(region.end)
+    antismash_comment["Orig. length"] = str(record_length)
 
     return annotations
 
@@ -238,7 +241,7 @@ def write_to_genbank(region: RegionData, record: SeqRecord, handle: IO) -> None:
     region_record = _build_base_record(region, record)
     _adjust_features(region, region_record, record)
 
-    region_record.annotations = _build_annotations(region, record.annotations)
+    region_record.annotations = _build_annotations(region, record.annotations, len(record))
 
     seqio.write([region_record], handle, "genbank")
 

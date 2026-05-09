@@ -95,6 +95,28 @@ jobs:
             echo "result=conflict" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Bump UPSTREAM_VERSION to match upstream
+        if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
+        run: |
+          # Upstream tags follow N-N-N (e.g. "8-0-4") and live on stable branches,
+          # not on master. Pick the highest such tag and convert dashes to dots.
+          git fetch upstream --tags --quiet
+          latest_tag=$(git tag --sort=-version:refname \
+            | grep -E '^[0-9]+-[0-9]+-[0-9]+$' | head -1)
+          upstream_version=$(echo "$latest_tag" | sed 's/-/./g')
+          if [ -z "$upstream_version" ]; then
+            echo "Could not derive upstream version from tags; leaving UPSTREAM_VERSION untouched."
+            exit 0
+          fi
+          current=$(awk -F\" '/^UPSTREAM_VERSION/ {print $2; exit}' antismash/main.py)
+          if [ "$current" = "$upstream_version" ]; then
+            echo "UPSTREAM_VERSION already $upstream_version; nothing to do."
+            exit 0
+          fi
+          sed -i "s|^UPSTREAM_VERSION = .*|UPSTREAM_VERSION = \"$upstream_version\"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml|" antismash/main.py
+          git add antismash/main.py
+          git commit -m "Bump UPSTREAM_VERSION to $upstream_version"
+
       - name: Push sync branch
         if: steps.check.outputs.behind != '0' && steps.guard.outputs.skip != 'true'
         run: git push --force-with-lease origin "$SYNC_BRANCH"

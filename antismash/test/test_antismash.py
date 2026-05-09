@@ -70,7 +70,8 @@ class TestAntismash(unittest.TestCase):
 
         main.add_antismash_comments([(rec, bio)], options)
         comment = bio.annotations["structured_comment"]["antiSMASH-Data"]
-        assert comment["Version"] == options.version
+        assert comment["Version"] == main.UPSTREAM_VERSION
+        assert comment["metaSMASH Version"] == options.version
         assert "Original ID" not in comment
         assert "Starting at" not in comment
         assert "Ending at" not in comment
