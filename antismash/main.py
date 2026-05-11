@@ -52,7 +52,7 @@ from antismash.outputs import html
 from antismash.support import genefinding
 from antismash.custom_typing import AntismashModule
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 UPSTREAM_VERSION = "8.0.4"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml
 
 
@@ -1285,27 +1285,32 @@ def _preload_analysis_caches(options: ConfigType) -> None:
         preload_matrices()
 
 
-_STREAMING_PHASE2_WINDOW_MIN = 1024
+# Default size used for both Phase 1 batch (records per parallel dispatch) and
+# Phase 2 window (records-with-regions accumulated before analysis fires).
+_STREAMING_DEFAULT_SIZE = 1024
+
+# Back-compat alias for any external code or tests still importing the old name.
+_STREAMING_PHASE2_WINDOW_MIN = _STREAMING_DEFAULT_SIZE
 
 
 def _compute_streaming_phase1_batch_size(options: ConfigType) -> int:
-    """Return the bounded Phase 1 detection batch size for streaming runs."""
+    """Return the Phase 1 detection batch size for streaming runs."""
     configured = int(getattr(options, "streaming_phase1_batch_size", 0) or 0)
     if configured < 0:
         raise ValueError("streaming_phase1_batch_size must be >= 0")
     if configured:
         return configured
-    return max(_STREAMING_PHASE2_WINDOW_MIN, int(options.workers) * 4)
+    return _STREAMING_DEFAULT_SIZE
 
 
 def _compute_streaming_phase2_window_size(options: ConfigType) -> int:
-    """Return the bounded Phase 2 window size for streaming runs."""
+    """Return the Phase 2 window size for streaming runs."""
     configured = int(getattr(options, "streaming_phase2_window_size", 0) or 0)
     if configured < 0:
         raise ValueError("streaming_phase2_window_size must be >= 0")
     if configured:
         return configured
-    return max(_STREAMING_PHASE2_WINDOW_MIN, int(options.workers) * 4)
+    return _STREAMING_DEFAULT_SIZE
 
 
 def _take_record_batch(record_iterator: Iterator[Tuple[SeqRecord, int]],

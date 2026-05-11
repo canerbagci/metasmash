@@ -646,14 +646,15 @@ def advanced_options() -> ModuleArgs:
                      type=int,
                      default=0,
                      help="Override the streaming Phase 1 detection batch size. "
-                          "0 keeps the automatic default. "
-                          "(default: %(default)s)")
+                          "0 keeps the automatic default of 1024 records per "
+                          "parallel dispatch. (default: %(default)s)")
     group.add_option('--streaming-phase2-window-size',
                      dest='streaming_phase2_window_size',
                      type=int,
                      default=0,
                      help="Override the streaming Phase 2 window size. "
-                          "0 keeps the automatic default. "
+                          "0 keeps the automatic default of 1024 "
+                          "records-with-regions before analysis fires. "
                           "(default: %(default)s)")
     group.add_option("--remove-existing-annotations",
                      dest="remove_existing_annotations",

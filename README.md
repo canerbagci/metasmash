@@ -53,8 +53,8 @@ metasmash --streaming off input.fasta
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--streaming {auto,on,off}` | `auto` | `auto` enables streaming for >10 records, `on` forces it, `off` uses classic pipeline |
-| `--streaming-phase1-batch-size N` | `0` (auto) | Override records-per-batch in streaming Phase 1 (detection). `0` keeps the automatic heuristic. |
-| `--streaming-phase2-window-size N` | `0` (auto) | Override the Phase 2 analysis window size. `0` keeps the automatic heuristic. |
+| `--streaming-phase1-batch-size N` | `0` (auto → 1024) | Override records-per-batch in streaming Phase 1 (detection). `0` uses the default 1024 records per parallel dispatch. |
+| `--streaming-phase2-window-size N` | `0` (auto → 1024) | Override the Phase 2 analysis window size. `0` uses the default 1024 records-with-regions before analysis fires. |
 | `--workers W` | `min(cpus, max(2, cpus // 4))` (≈ `cpus/4`, min 2) | Number of parallel worker processes for Phase 2. Each worker gets `cpus/workers` threads. Phase 1 always uses `cpus` workers regardless. Lower values reduce peak memory. |
 | `--output-skip-records-without-regions` / `--no-output-skip-records-without-regions` | on | Omit records without detected BGC regions from JSON/GBK output |
 | `--html-taxonomy PATH` | *(none)* | Two-column TSV mapping contig IDs to taxonomy lineages; rendered in the dashboard overview table. |
