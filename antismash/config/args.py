@@ -532,9 +532,11 @@ def basic_options() -> _SimpleArgs:
                     dest='workers',
                     type=int,
                     default=-1,
-                    help="Number of parallel worker processes. Each worker gets cpus/workers "
-                         "threads. Lower values reduce memory at same CPU utilization. "
-                         "(default: same as --cpus)")
+                    help="Number of parallel worker processes for Phase 2 (analysis). Each "
+                         "worker gets cpus/workers threads. Phase 1 (detection) always uses "
+                         "--cpus workers x 1 thread regardless of this flag. Lower values "
+                         "reduce peak memory. "
+                         "(default: min(cpus, max(2, cpus // 4)) — ~cpus/4, min 2)")
     group.add_option('--databases',
                     dest='database_dir',
                     default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databases'),

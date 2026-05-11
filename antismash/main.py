@@ -1966,6 +1966,16 @@ def _create_picklable_options(options: ConfigType) -> ConfigType:
 METASMASH_BUILD = "ms-build-7.5"
 
 
+def _resolve_default_workers(cpus: int) -> int:
+    """Memory-friendlier default for ``--workers`` derived from ``--cpus``.
+
+    Returns ``min(cpus, max(2, cpus // 4))`` — gives each Phase 2 worker
+    ~4 threads (sweet spot for hmmsearch/diamond/blastp) while bounding
+    concurrent in-flight records to roughly ``cpus/4``.
+    """
+    return min(cpus, max(2, cpus // 4))
+
+
 def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     """ The real run_antismash, assumes logging is set up around it """
     logging.info("metaSMASH version: %s", options.version)
@@ -2003,11 +2013,26 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     if not options.all_enabled_modules:
         raise ValueError("No detection or analysis modules enabled")
 
-    # resolve --workers: default to --cpus for backward compatibility
+    # resolve --workers: default to a memory-friendlier value derived from --cpus.
+    # Phase 2 uses this directly; Phase 1 always uses options.cpus regardless.
     if options.workers < 1:
-        update_config({"workers": options.cpus})
+        resolved_workers = _resolve_default_workers(options.cpus)
+        update_config({"workers": resolved_workers})
+        workers_source = "auto via min(cpus, max(2, cpus//4))"
     else:
-        update_config({"workers": min(options.workers, options.cpus)})
+        resolved_workers = min(options.workers, options.cpus)
+        update_config({"workers": resolved_workers})
+        workers_source = "user-set"
+
+    logging.info(
+        "Workers: %d (%s from --cpus=%d). Phase 1 always uses --cpus workers x 1 thread; "
+        "Phase 2 uses %d workers x %d threads/worker. Override with --workers N.",
+        resolved_workers,
+        workers_source,
+        options.cpus,
+        resolved_workers,
+        max(1, options.cpus // resolved_workers),
+    )
 
     # determine if streaming mode should be used
     use_streaming, prefetched_metadata = should_use_streaming(options, sequence_file)

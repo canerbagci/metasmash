@@ -55,7 +55,7 @@ metasmash --streaming off input.fasta
 | `--streaming {auto,on,off}` | `auto` | `auto` enables streaming for >10 records, `on` forces it, `off` uses classic pipeline |
 | `--streaming-phase1-batch-size N` | `0` (auto) | Override records-per-batch in streaming Phase 1 (detection). `0` keeps the automatic heuristic. |
 | `--streaming-phase2-window-size N` | `0` (auto) | Override the Phase 2 analysis window size. `0` keeps the automatic heuristic. |
-| `--workers W` | same as `--cpus` | Number of parallel worker processes. Each worker gets `cpus/workers` threads. Lower values reduce peak memory. |
+| `--workers W` | `min(cpus, max(2, cpus // 4))` (≈ `cpus/4`, min 2) | Number of parallel worker processes for Phase 2. Each worker gets `cpus/workers` threads. Phase 1 always uses `cpus` workers regardless. Lower values reduce peak memory. |
 | `--output-skip-records-without-regions` / `--no-output-skip-records-without-regions` | on | Omit records without detected BGC regions from JSON/GBK output |
 | `--html-taxonomy PATH` | *(none)* | Two-column TSV mapping contig IDs to taxonomy lineages; rendered in the dashboard overview table. |
 
@@ -66,7 +66,7 @@ All standard antiSMASH options (e.g. `--cpus`, `--genefinding-tool`, `--cb-known
 `--cpus` and `--workers` together control the trade-off between throughput and memory usage:
 
 - **`--cpus N`** (default: all cores) — total CPU budget for the run.
-- **`--workers W`** (default: same as `--cpus`) — number of parallel worker processes. Each worker gets `cpus / workers` threads for internal tools (hmmsearch, diamond, blastp, etc.).
+- **`--workers W`** (default: `~cpus/4`, capped at 2 minimum) — number of parallel worker processes for **Phase 2 (analysis)**. Each worker gets `cpus / workers` threads for internal tools (hmmsearch, diamond, blastp, etc.). **`--workers` does not affect Phase 1 (detection)** — Phase 1 always uses `cpus` workers x 1 thread each.
 
 In streaming mode, the two phases use workers differently:
 
@@ -80,7 +80,7 @@ In streaming mode, the two phases use workers differently:
 - **Fewer workers = less memory.** Each worker loads one record into memory, so fewer workers means fewer records resident simultaneously. Each worker compensates with more threads for I/O-heavy tools.
 - **More workers = higher throughput, higher peak memory.** More records processed in parallel, but each holds its own copy of per-record data structures.
 - **Example:** `metasmash --cpus 32 --workers 8 input.fasta` runs 8 parallel records, each using 4 threads internally — a good balance for large metagenomes on a 32-core machine.
-- **Default (workers = cpus):** maximises record-level parallelism with single-threaded tools. Fine for small-to-medium inputs; consider lowering `--workers` for very large metagenomes to keep memory bounded.
+- **Default (`workers ≈ cpus / 4`, min 2):** balances throughput and memory by giving each Phase 2 worker ~4 threads for hmmsearch/diamond/blastp.
 
 ## Upstream antiSMASH
 

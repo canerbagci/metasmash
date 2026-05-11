@@ -136,6 +136,36 @@ class TestConfig(unittest.TestCase):
         assert config.executables  # this namespace must always exist, but the contents may or may not
 
 
+class TestWorkersDefault(unittest.TestCase):
+    def test_resolve_default_workers_formula(self):
+        from antismash.main import _resolve_default_workers
+        cases = [
+            (1, 1),
+            (2, 2),
+            (4, 2),
+            (8, 2),
+            (16, 4),
+            (32, 8),
+            (64, 16),
+            (128, 32),
+        ]
+        for cpus, expected in cases:
+            with self.subTest(cpus=cpus):
+                self.assertEqual(_resolve_default_workers(cpus), expected)
+
+    def test_workers_cli_default_is_sentinel(self):
+        # --workers default is -1 (sentinel meaning "auto-resolve from --cpus")
+        parser = args.build_parser()
+        options = parser.parse_args(['--cpus', '32'])
+        self.assertEqual(options.workers, -1)
+        self.assertEqual(options.cpus, 32)
+
+    def test_workers_cli_explicit_value_preserved(self):
+        parser = args.build_parser()
+        options = parser.parse_args(['--cpus', '32', '--workers', '8'])
+        self.assertEqual(options.workers, 8)
+
+
 class TestExecutableArg(unittest.TestCase):
     def setUp(self):
         self.core_parser = args.build_parser()
