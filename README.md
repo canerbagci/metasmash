@@ -1,5 +1,11 @@
 # MetaSMASH
 
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](https://anaconda.org/bioconda/metasmash)
+[![Bioconda version](https://anaconda.org/bioconda/metasmash/badges/version.svg)](https://anaconda.org/bioconda/metasmash)
+[![Bioconda downloads](https://anaconda.org/bioconda/metasmash/badges/downloads.svg)](https://anaconda.org/bioconda/metasmash)
+[![Bioconda platforms](https://anaconda.org/bioconda/metasmash/badges/platforms.svg)](https://anaconda.org/bioconda/metasmash)
+[![License: AGPLv3+](https://img.shields.io/badge/license-AGPLv3+-blue.svg)](LICENSE.txt)
+
 A scalable fork of [antiSMASH](https://github.com/antismash/antismash) for metagenome-scale biosynthetic gene cluster (BGC) mining.
 
 ## What's different
@@ -17,7 +23,19 @@ The classic (non-streaming) antiSMASH pipeline is fully preserved and can be use
 
 ## Installation
 
-Requires Python >= 3.11. Not on PyPI — install from source.
+Requires Python >= 3.11.
+
+### From bioconda (recommended)
+
+```bash
+conda create -n metasmash -c bioconda -c conda-forge metasmash
+conda activate metasmash
+
+# Download databases
+download-antismash-databases
+```
+
+### From source
 
 ```bash
 # Create a conda environment with required external tools

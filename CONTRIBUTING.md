@@ -1,3 +1,21 @@
+metaSMASH fork notes
+====================
+
+metaSMASH is a fork of [antiSMASH](https://github.com/antismash/antismash)
+focused on scaling BGC mining to metagenome-sized inputs.
+
+**Where contributions go**
+
+- Changes to the streaming pipeline, the metagenome dashboard, diagnostics,
+  or other metaSMASH-specific code → open a PR against this repository
+  ([`canerbagci/metasmash`](https://github.com/canerbagci/metasmash)).
+
+The guidance below is inherited from upstream antiSMASH and still applies
+to PRs against this fork, with one exception: send PRs here, not to the
+antiSMASH team repository.
+
+---
+
 How to contribute
 =================
 
