@@ -4,14 +4,13 @@
 """ Compares subsets of clusters to a reference data set of other subclusters
 """
 
-import functools
 import logging
 import os
 from typing import Dict, List
 
 from helperlibs.wrappers.io import TemporaryDirectory
 
-from antismash.common import path, subprocessing
+from antismash.common import path
 from antismash.common.secmet import Record
 from antismash.config import ConfigType
 
@@ -95,65 +94,29 @@ def run_subclusterblast_on_record(record: Record, options: ConfigType) -> Genera
     return perform_subclusterblast(options, record, clusters, proteins)
 
 
-def _run_blast_helper(database: str, index: int) -> str:
-    """ A simple wrapper of run_blast() to reverse arg order to allow for
-        functools.partial to simplify run_clusterblast_processes()
+def run_clusterblast_processes() -> None:
+    """ Runs a single multi-threaded blastp over "input.fasta".
 
-        Cannot be a locally defined function because Pool requires it to be
-        pickable.
-
-        Arguments:
-            database: the database to search in
-            index: the index of the current process, used to generate the
-                    filename to use
-
-        Returns:
-            the name of the output file created by run_blast()
-    """
-    return run_blast(f"input{index}.fasta", database)
-
-
-def run_clusterblast_processes(options: ConfigType) -> None:
-    """ Run blast in parallel, creates `options.cpu` number of files with
-        the name format "inputN.fasta"
-
-        Arguments:
-            options: antismash Config
+        blastp parallelises itself via ``-num_threads`` (see ``run_blast``), so
+        no process-level fan-out is needed. This also works inside the daemonic
+        Phase 2 worker processes, where a nested multiprocessing pool would
+        silently fall back to running serially on a single core.
 
         Returns:
             None
     """
     database = _get_datafile_path('proteins.fasta')
-    if options.cpus == 1:
-        run_blast("input.fasta", database)
-        return
-
-    # set the first arg to always be database
-    partial = functools.partial(_run_blast_helper, database)
-    # run in parallel
-    subprocessing.parallel_function(partial, [[i] for i in range(options.cpus)],
-                                    cpus=options.cpus)
+    run_blast("input.fasta", database)
 
 
-def read_clusterblast_output(options: ConfigType) -> str:
-    """ Builds a single output from the results from the distributed blast run
-
-        Arguments:
-            options: antismash Config
+def read_clusterblast_output() -> str:
+    """ Reads the blast output produced by run_clusterblast_processes.
 
         Returns:
             a string containing all blast run output
     """
-    if options.cpus == 1:
-        with open("input.out", encoding="utf-8") as handle:
-            return handle.read()
-
-    blastoutput = []
-    for i in range(options.cpus):
-        with open(f"input{i}.out", "r", encoding="utf-8") as handle:
-            output = handle.read()
-        blastoutput.append(output)
-    return "".join(blastoutput)
+    with open("input.out", encoding="utf-8") as handle:
+        return handle.read()
 
 
 def perform_subclusterblast(options: ConfigType, record: Record, clusters: Dict[str, ReferenceCluster],
@@ -176,10 +139,9 @@ def perform_subclusterblast(options: ConfigType, record: Record, clusters: Dict[
         allcoregenes = get_core_gene_ids(record)
         for region in record.get_regions():
             # prepare and run diamond
-            write_fastas_with_all_genes([region], "input.fasta",
-                                        partitions=options.cpus)
-            run_clusterblast_processes(options)
-            blastoutput = read_clusterblast_output(options)
+            write_fastas_with_all_genes([region], "input.fasta")
+            run_clusterblast_processes()
+            blastoutput = read_clusterblast_output()
             # parse and score diamond results
             _, cluster_names_to_queries = blastparse(blastoutput, record,
                                                      min_seq_coverage=40,

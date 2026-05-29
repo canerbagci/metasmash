@@ -155,6 +155,7 @@ def run_blast(query: str, database: str) -> str:
     out_file = query.rsplit(".", 1)[0] + ".out"
     command = ["blastp", "-db", database, "-query", query, "-outfmt", "6",
                "-max_target_seqs", "10000", "-evalue", "1e-05",
+               "-num_threads", str(subprocessing.get_effective_cpus()),
                "-out", out_file]
     res = subprocessing.execute(command)
     if not res.successful():
