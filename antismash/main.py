@@ -52,7 +52,7 @@ from antismash.outputs import html
 from antismash.support import genefinding
 from antismash.custom_typing import AntismashModule
 
-__version__ = "0.1.2"
+__version__ = "0.1.3.5"
 UPSTREAM_VERSION = "8.0.4"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml
 
 
@@ -1375,6 +1375,25 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                 rec, mr = phase2_inputs[rec_id]
                 yield ((rec, mr), picklable_options_p2)
 
+    # Pre-pass: run clusterblast's diamond ONCE over all window records (per DB), writing
+    # per-record outputs the workers read, instead of N concurrent per-record diamonds.
+    if (getattr(options, "streaming_batch_clusterblast", True)
+            and (getattr(options, "cb_general", False) or getattr(options, "cb_knownclusters", False))):
+        from antismash.modules.clusterblast import precompute_clusterblast_diamond
+        # node-local scratch (avoids parallel-FS syscall overhead); falls back to output_dir
+        batch_dir = os.path.join(os.environ.get("TMPDIR") or options.output_dir, ".cb_batch")
+        try:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            os.makedirs(batch_dir, exist_ok=True)
+            precompute_clusterblast_diamond(
+                (rec for rec, _mr in phase2_inputs.values()), options, batch_dir)
+            picklable_options_p2.clusterblast_precomputed_dir = batch_dir
+        except Exception as err:  # pylint: disable=broad-except
+            logging.warning("Batched clusterblast pre-pass failed (%s); "
+                            "falling back to per-record diamond", err)
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            picklable_options_p2.clusterblast_precomputed_dir = None
+
     for item in parallel_function_lazy(
             _safe_process_record_analysis, _analysis_args(),
             cpus=user_workers):
@@ -1865,6 +1884,8 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                 data_handle.close()
             if gbk_handle is not None:
                 gbk_handle.close()
+            shutil.rmtree(os.path.join(os.environ.get("TMPDIR") or options.output_dir, ".cb_batch"),
+                          ignore_errors=True)
 
     # Report failures
     if failed_count:
@@ -1968,9 +1989,6 @@ def _create_picklable_options(options: ConfigType) -> ConfigType:
     return picklable_options
 
 
-METASMASH_BUILD = "ms-build-7.5"
-
-
 def _resolve_default_workers(cpus: int) -> int:
     """Memory-friendlier default for ``--workers`` derived from ``--cpus``.
 
@@ -1984,7 +2002,6 @@ def _resolve_default_workers(cpus: int) -> int:
 def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
     """ The real run_antismash, assumes logging is set up around it """
     logging.info("metaSMASH version: %s", options.version)
-    logging.info("MetaSMASH build: %s", METASMASH_BUILD)
     _log_found_executables(options)
 
     if options.list_plugins:

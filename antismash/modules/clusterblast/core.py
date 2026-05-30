@@ -6,6 +6,8 @@
 from collections import defaultdict, OrderedDict
 import logging
 import os
+import resource
+import time
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Iterable, List, Set, Sequence, Tuple
 
@@ -187,8 +189,106 @@ def run_diamond_on_all_regions(regions: Sequence[secmet.Region], database: str) 
     ]
     with NamedTemporaryFile() as temp_file:
         write_fastas_with_all_genes(regions, temp_file.name)
+        _wall_start = time.time()
+        _cpu_start = resource.getrusage(resource.RUSAGE_CHILDREN)
         stdout = subprocessing.run_diamond_search(temp_file.name, database, mode="blastp", opts=extra_args)
+        _cpu_end = resource.getrusage(resource.RUSAGE_CHILDREN)
+        _wall = time.time() - _wall_start
+        _cpu = (_cpu_end.ru_utime - _cpu_start.ru_utime) + (_cpu_end.ru_stime - _cpu_start.ru_stime)
+        db_label = os.path.join(os.path.basename(os.path.dirname(database)), os.path.basename(database))
+        logging.info("CB-TIMING diamond db=%s regions=%d: wall=%.3fs cpu=%.3fs cores=%.2f",
+                     db_label, len(regions), _wall, _cpu, _cpu / _wall if _wall > 0 else 0.0)
     return stdout
+
+
+def run_batched_clusterblast_diamond(records: Iterable[secmet.Record], database: str,
+                                     out_dir: str, db_label: str) -> None:
+    """ Run a single diamond search over the region genes of all given records and write
+        each record's slice of the output to ``<out_dir>/<record.id>.<db_label>.tsv``.
+
+        Used by the streaming Phase-2 pre-pass to replace N concurrent per-record diamond
+        invocations (one per worker, all hammering the same database) with one all-core
+        search per database. Each per-record file is byte-identical to what
+        ``run_diamond_on_all_regions`` would have produced for that record, so downstream
+        parsing/scoring is unchanged. Records with no region genes are skipped (their worker
+        falls back to its own diamond, as before).
+    """
+    all_names: List[str] = []
+    all_seqs: List[str] = []
+    idx_to_record_id: Dict[int, str] = {}
+    for idx, record in enumerate(records):
+        names: List[str] = []
+        seqs: List[str] = []
+        for region in record.get_regions():
+            region_names, region_seqs = create_blast_inputs(region)
+            names.extend(region_names)
+            seqs.extend(region_seqs)
+        if not names:
+            continue
+        idx_to_record_id[idx] = record.id
+        prefix = f"input@{idx}"
+        for name, seq in zip(names, seqs):
+            all_names.append(prefix + name[len("input"):])  # names always start with "input|"
+            all_seqs.append(seq)
+
+    # give every searched record a file (possibly empty) so its worker never re-runs diamond
+    for record_id in idx_to_record_id.values():
+        open(os.path.join(out_dir, f"{record_id}.{db_label}.tsv"), "w", encoding="utf-8").close()
+    if not all_names:
+        return
+
+    query_path = os.path.join(out_dir, f"_combined_{db_label}.fasta")
+    output_path = os.path.join(out_dir, f"_combined_{db_label}.tsv")
+    fasta.write_fasta(all_names, all_seqs, query_path)
+    extra_args = [
+        "--compress", "0",
+        "--max-target-seqs", "10000",
+        "--evalue", "1e-05",
+        "--outfmt", "6",
+        "--out", output_path,
+    ]
+    logging.info("Batched clusterblast (%s): one diamond over %d records' region genes",
+                 db_label, len(idx_to_record_id))
+    subprocessing.run_diamond_search(query_path, database, mode="blastp", opts=extra_args)
+
+    handles: Dict[str, Any] = {}
+    try:
+        with open(output_path, encoding="utf-8") as combined:
+            for line in combined:
+                query, sep, rest = line.partition("\t")
+                token, bar, tail = query.partition("|")
+                if not token.startswith("input@"):
+                    continue
+                record_id = idx_to_record_id.get(int(token[len("input@"):]))
+                if record_id is None:
+                    continue
+                handle = handles.get(record_id)
+                if handle is None:
+                    handle = open(os.path.join(out_dir, f"{record_id}.{db_label}.tsv"),
+                                  "w", encoding="utf-8")
+                    handles[record_id] = handle
+                handle.write("input" + bar + tail + sep + rest)
+    finally:
+        for handle in handles.values():
+            handle.close()
+    os.remove(query_path)
+    os.remove(output_path)
+
+
+def read_precomputed_or_run_diamond(options: ConfigType, record: secmet.Record,
+                                    regions: Sequence[secmet.Region], database: str,
+                                    db_label: str) -> str:
+    """ Return clusterblast diamond output for the record: a precomputed per-record file
+        from the streaming batched pre-pass if present, else run diamond directly (the
+        original per-record path).
+    """
+    precomputed_dir = getattr(options, "clusterblast_precomputed_dir", None)
+    if precomputed_dir:
+        path = os.path.join(precomputed_dir, f"{record.id}.{db_label}.tsv")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                return handle.read()
+    return run_diamond_on_all_regions(regions, database)
 
 
 def _load_cluster_data(file_path: str) -> dict[str, ReferenceCluster]:

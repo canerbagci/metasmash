@@ -7,6 +7,7 @@
 
 import logging
 import os
+import time
 from typing import Dict, List
 
 from antismash.common.path import find_latest_database_version
@@ -18,7 +19,7 @@ from .core import (
     get_core_gene_ids,
     load_clusterblast_database,
     parse_all_clusters,
-    run_diamond_on_all_regions,
+    read_precomputed_or_run_diamond,
     score_clusterblast_output,
 )
 from .results import RegionResult, GeneralResults
@@ -119,7 +120,10 @@ def perform_knownclusterblast(options: ConfigType, record: Record,
     version = find_latest_database_version(os.path.join(options.database_dir, "knownclusterblast"))
     results = GeneralResults(record.id, search_type="knownclusterblast", data_version=version)
 
-    blastoutput = run_diamond_on_all_regions(record.get_regions(), _get_datafile_path('proteins', options))
+    blastoutput = read_precomputed_or_run_diamond(options, record, record.get_regions(),
+                                                  _get_datafile_path('proteins', options), "known")
+    _wall_start = time.time()
+    _cpu_start = time.process_time()
     clusters_by_number, _ = parse_all_clusters(blastoutput, record,
                                                min_seq_coverage=40,
                                                min_perc_identity=45)
@@ -137,6 +141,10 @@ def perform_knownclusterblast(options: ConfigType, record: Record,
 
     results.mibig_entries = mibig_protein_homology(blastoutput, record,
                                                    reference_clusters)
+    _wall = time.time() - _wall_start
+    _cpu = time.process_time() - _cpu_start
+    logging.info("CB-TIMING known_python: wall=%.3fs cpu=%.3fs cores=%.2f",
+                 _wall, _cpu, _cpu / _wall if _wall > 0 else 0.0)
     return results
 
 

@@ -25,6 +25,22 @@ NAME = "clusterblast"
 SHORT_DESCRIPTION = "comparative gene cluster analysis"
 
 
+def precompute_clusterblast_diamond(records: Any, options: ConfigType, out_dir: str) -> None:
+    """ Streaming Phase-2 pre-pass: run each enabled clusterblast diamond variant ONCE over
+        all records in the window, writing per-record outputs into ``out_dir`` for the
+        per-worker clusterblast to read (instead of each worker running its own diamond).
+    """
+    from .core import run_batched_clusterblast_diamond
+    records = list(records)
+    if options.cb_general:
+        database = os.path.join(options.database_dir, "clusterblast", "proteins")
+        run_batched_clusterblast_diamond(records, database, out_dir, "general")
+    if options.cb_knownclusters:
+        from .known import _get_datafile_path
+        run_batched_clusterblast_diamond(records, _get_datafile_path("proteins", options),
+                                         out_dir, "known")
+
+
 def get_arguments() -> ModuleArgs:
     """ Builds the args for the clusterblast module """
     args = ModuleArgs('ClusterBlast options', 'cb')

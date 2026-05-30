@@ -605,6 +605,8 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
                                    skipped_record_count: int = 0,
                                    ) -> None:
     """Streaming finalization that uses lightweight record summaries only."""
+    import time as _time  # local import: timing instrumentation for the finalize tail
+    _t0 = _time.monotonic()
     options_layer = OptionsLayer(options, all_modules)
 
     regions_index: Dict[str, Any] = {"order": []}
@@ -615,6 +617,7 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
             regions_index["order"].append(anchor)
 
     _write_regions_index(lightweight_records, regions_index, options.output_dir)
+    _t_index = _time.monotonic()
 
     sorted_records = sorted(record_summaries, key=lambda record: record.record_index)
 
@@ -643,6 +646,7 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
     regions_content = _strip_leading_whitespace(regions_content)
     with open(os.path.join(options.output_dir, "regions.html"), "w", encoding="utf-8") as fh:
         fh.write(regions_content)
+    _t_overview = _time.monotonic()
 
     dashboard_content = generate_streaming_dashboard(
         sorted_records, options_layer, page_title,
@@ -652,6 +656,14 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
     dashboard_content = _strip_leading_whitespace(dashboard_content)
     with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write(dashboard_content)
+    _t_dashboard = _time.monotonic()
+
+    logging.info(
+        "finalize-html timing: regions_index=%.1fs overview.html=%.1fs dashboard=%.1fs "
+        "(total=%.1fs over %d records / %d regions)",
+        _t_index - _t0, _t_overview - _t_index, _t_dashboard - _t_overview,
+        _t_dashboard - _t0, len(sorted_records), regions_written,
+    )
 
 
 def finalize_html_output(lightweight_records: List[Dict[str, Any]],

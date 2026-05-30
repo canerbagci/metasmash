@@ -5,7 +5,9 @@
     clusters.
 """
 
+import logging
 import os
+import time
 from typing import Dict
 
 from antismash.config import ConfigType
@@ -14,7 +16,7 @@ from antismash.common.secmet import Record
 from .core import (
     get_core_gene_ids,
     parse_all_clusters,
-    run_diamond_on_all_regions,
+    read_precomputed_or_run_diamond,
     score_clusterblast_output,
 )
 from .data_structures import ProteinDB, ReferenceCluster
@@ -38,8 +40,10 @@ def perform_clusterblast(options: ConfigType, record: Record,
     """
     regions = record.get_regions()
     database = os.path.join(options.database_dir, 'clusterblast', 'proteins')
-    blastoutput = run_diamond_on_all_regions(regions, database)
+    blastoutput = read_precomputed_or_run_diamond(options, record, regions, database, "general")
 
+    _wall_start = time.time()
+    _cpu_start = time.process_time()
     clusters_by_number, _ = parse_all_clusters(blastoutput, record,
                                                min_seq_coverage=10,
                                                min_perc_identity=30)
@@ -58,4 +62,8 @@ def perform_clusterblast(options: ConfigType, record: Record,
         results.add_region_result(result, db_clusters, db_proteins)
 
     results.write_to_file(record, options)
+    _wall = time.time() - _wall_start
+    _cpu = time.process_time() - _cpu_start
+    logging.info("CB-TIMING general_python: wall=%.3fs cpu=%.3fs cores=%.2f",
+                 _wall, _cpu, _cpu / _wall if _wall > 0 else 0.0)
     return results

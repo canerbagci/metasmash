@@ -62,7 +62,7 @@ class Config:  # since it's a glorified namespace, pylint: disable=too-few-publi
         def __setattr__(self, attr: str, value: Any) -> None:
             # special exceptions for those arguments we must update after
             # reading sequences and before analysis
-            if attr in ["output_dir", "version", "all_enabled_modules"]:
+            if attr in ["output_dir", "version", "all_enabled_modules", "clusterblast_precomputed_dir"]:
                 self.__dict__[attr] = value
                 return
             raise RuntimeError("Config options can't be set directly")

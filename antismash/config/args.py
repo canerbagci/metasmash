@@ -656,6 +656,14 @@ def advanced_options() -> ModuleArgs:
                           "0 keeps the automatic default of 1024 "
                           "records-with-regions before analysis fires. "
                           "(default: %(default)s)")
+    group.add_option('--streaming-batch-clusterblast',
+                     dest='streaming_batch_clusterblast',
+                     action=argparse.BooleanOptionalAction,
+                     default=True,
+                     help="In streaming Phase 2, run each clusterblast diamond search "
+                          "(general/known) once over all records in a window instead of "
+                          "once per record. Identical results; avoids many concurrent "
+                          "diamonds contending for the database. (default: %(default)s)")
     group.add_option("--remove-existing-annotations",
                      dest="remove_existing_annotations",
                      action=argparse.BooleanOptionalAction,
