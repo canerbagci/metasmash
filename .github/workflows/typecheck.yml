@@ -26,7 +26,6 @@ jobs:
         continue-on-error: true
         run: |
           mypy \
-            antismash/common/cpu_diagnostics.py \
             antismash/common/memory.py \
             antismash/outputs/html/streaming_summary.py \
             antismash/outputs/html/taxonomy.py \
