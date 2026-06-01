@@ -34,7 +34,6 @@ jobs:
         run: |
           pytest --durations=3 \
             --deselect antismash/config/test/test_args.py::TestExecutableArg::test_executables_default \
-            antismash/common/test/test_cpu_diagnostics.py \
             antismash/common/test/test_streaming.py \
             antismash/outputs/html/test/test_taxonomy.py \
             antismash/outputs/html/test/test_generation.py \

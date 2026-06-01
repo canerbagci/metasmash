@@ -605,7 +605,8 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
                                    skipped_record_count: int = 0,
                                    ) -> None:
     """Streaming finalization that uses lightweight record summaries only."""
-    import time as _time  # local import: timing instrumentation for the finalize tail
+    import logging  # local import: timing instrumentation for the finalize tail
+    import time as _time
     _t0 = _time.monotonic()
     options_layer = OptionsLayer(options, all_modules)
 
