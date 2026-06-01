@@ -35,7 +35,6 @@ from antismash.config import (
     update_config,
 )
 from antismash.common import (
-    cpu_diagnostics,
     errors,
     logs,
     memory as memory_diagnostics,
@@ -1023,19 +1022,6 @@ def _log_parent_memory(label: str, options: ConfigType,
     return trace_snapshot
 
 
-def _log_parent_cpu(label: str, options: ConfigType,
-                    extra: Optional[Dict[str, Union[int, str]]] = None) -> None:
-    """ Log parent-side CPU diagnostics for streaming runs.
-
-        Mirrors :func:`_log_parent_memory` and emits a sibling
-        ``cpudiag parent <label> ...`` line whenever the user passes
-        ``--cpu-diagnostics``. The interesting field is ``effective_cpus``:
-        if it drops well below ``options.cpus`` between two checkpoints,
-        that interval was bottlenecked on a single thread.
-    """
-    cpu_diagnostics.log_parent_sample(label, options, extra=extra)
-
-
 def _safe_process_record_full(record_tuple, options):
     """ Wrapper around process_record_full that catches exceptions for
         individual records, allowing the rest of the pool to continue.
@@ -1366,8 +1352,6 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
         extra=phase2_window_start_extra,
         trace_snapshot=trace_snapshot,
     )
-    _log_parent_cpu("phase2-window-start", options, extra=phase2_window_start_extra)
-
     def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType]]:
         record_ids = list(phase2_inputs.keys())
         for rec_id in record_ids:
@@ -1424,7 +1408,6 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                     extra=phase2_progress_extra,
                     trace_snapshot=trace_snapshot,
                 )
-                _log_parent_cpu("phase2-progress", options, extra=phase2_progress_extra)
             continue
 
         record, mod_results, analysis_timings = item
@@ -1489,8 +1472,6 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                 extra=phase2_progress_extra,
                 trace_snapshot=trace_snapshot,
             )
-            _log_parent_cpu("phase2-progress", options, extra=phase2_progress_extra)
-
     phase2_window_complete_extra: Dict[str, Union[int, str]] = {
         "window_index": window_index,
         "window_size": window_size,
@@ -1507,7 +1488,6 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
         extra=phase2_window_complete_extra,
         trace_snapshot=trace_snapshot,
     )
-    _log_parent_cpu("phase2-window-complete", options, extra=phase2_window_complete_extra)
     return phase2_seen, regions_count, failed_count, trace_snapshot
 
 
@@ -1659,7 +1639,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         extra=streaming_start_extra,
         trace_snapshot=trace_snapshot,
     )
-    _log_parent_cpu("streaming-start", options, extra=streaming_start_extra)
     with open(json_filename, "w", encoding="utf-8") as json_handle:
         json_writer = serialiser.StreamingJsonWriter(
             json_handle, input_basename, __version__, options.taxon)
@@ -1699,8 +1678,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         extra=phase1_batch_start_extra,
                         trace_snapshot=trace_snapshot,
                     )
-                    _log_parent_cpu("phase1-batch-start", options,
-                                    extra=phase1_batch_start_extra)
 
                     def _record_args(batch: List[Tuple[SeqRecord, int]] = record_batch
                                      ) -> Iterator[Tuple[Tuple[SeqRecord, int], ConfigType]]:
@@ -1735,8 +1712,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                                     extra=phase1_progress_extra,
                                     trace_snapshot=trace_snapshot,
                                 )
-                                _log_parent_cpu("phase1-progress", options,
-                                                extra=phase1_progress_extra)
                             continue
 
                         # Fast path: workers return a lightweight sentinel
@@ -1768,8 +1743,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                                     extra=phase1_progress_extra,
                                     trace_snapshot=trace_snapshot,
                                 )
-                                _log_parent_cpu("phase1-progress", options,
-                                                extra=phase1_progress_extra)
                             continue
 
                         record, mod_results, rec_timings = item
@@ -1808,8 +1781,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                                 extra=phase1_progress_extra,
                                 trace_snapshot=trace_snapshot,
                             )
-                            _log_parent_cpu("phase1-progress", options,
-                                            extra=phase1_progress_extra)
 
                     phase1_batch_complete_extra: Dict[str, Union[int, str]] = {
                         "batch_index": phase1_batch_index,
@@ -1828,8 +1799,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         extra=phase1_batch_complete_extra,
                         trace_snapshot=trace_snapshot,
                     )
-                    _log_parent_cpu("phase1-batch-complete", options,
-                                    extra=phase1_batch_complete_extra)
                     gc.collect()
 
                     if len(phase2_inputs) >= phase2_window_size:
@@ -1924,7 +1893,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
             extra=html_finalize_extra,
             trace_snapshot=trace_snapshot,
         )
-        _log_parent_cpu("html-finalize-complete", options, extra=html_finalize_extra)
         html_duration = (time.time() - html_start) / max(regions_count, 1)
         for val in timings_by_record.values():
             val[html.__name__] = html_duration
@@ -1956,8 +1924,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         extra=streaming_complete_extra,
         trace_snapshot=trace_snapshot,
     )
-    _log_parent_cpu("streaming-complete", options, extra=streaming_complete_extra)
-
     if options.debug:
         log_module_runtimes(timings_by_record)
 

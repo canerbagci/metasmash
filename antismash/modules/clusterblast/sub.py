@@ -6,8 +6,6 @@
 
 import logging
 import os
-import resource
-import time
 from typing import Dict, List
 
 from helperlibs.wrappers.io import TemporaryDirectory
@@ -137,24 +135,13 @@ def perform_subclusterblast(options: ConfigType, record: Record, clusters: Dict[
             record
     """
     results = GeneralResults(record.id, search_type="subclusterblast")
-    blast_wall = 0.0
-    blast_cpu = 0.0
-    py_wall = 0.0
-    py_cpu = 0.0
     with TemporaryDirectory(change=True):
         allcoregenes = get_core_gene_ids(record)
         for region in record.get_regions():
             # prepare and run blastp
             write_fastas_with_all_genes([region], "input.fasta")
-            _w = time.time()
-            _r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
             run_clusterblast_processes()
-            _r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-            blast_wall += time.time() - _w
-            blast_cpu += (_r1.ru_utime - _r0.ru_utime) + (_r1.ru_stime - _r0.ru_stime)
             # parse and score blastp results
-            _w = time.time()
-            _c0 = time.process_time()
             blastoutput = read_clusterblast_output()
             _, cluster_names_to_queries = blastparse(blastoutput, record,
                                                      min_seq_coverage=40,
@@ -163,10 +150,4 @@ def perform_subclusterblast(options: ConfigType, record: Record, clusters: Dict[
             # store results
             region_result = RegionResult(region, ranking, proteins, "subclusterblast")
             results.add_region_result(region_result, clusters, proteins)
-            py_wall += time.time() - _w
-            py_cpu += time.process_time() - _c0
-    logging.info("CB-TIMING sub_blast: wall=%.3fs cpu=%.3fs cores=%.2f",
-                 blast_wall, blast_cpu, blast_cpu / blast_wall if blast_wall > 0 else 0.0)
-    logging.info("CB-TIMING sub_python: wall=%.3fs cpu=%.3fs cores=%.2f",
-                 py_wall, py_cpu, py_cpu / py_wall if py_wall > 0 else 0.0)
     return results

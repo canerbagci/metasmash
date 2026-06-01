@@ -6,8 +6,6 @@
 from collections import defaultdict, OrderedDict
 import logging
 import os
-import resource
-import time
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Iterable, List, Set, Sequence, Tuple
 
@@ -189,15 +187,7 @@ def run_diamond_on_all_regions(regions: Sequence[secmet.Region], database: str) 
     ]
     with NamedTemporaryFile() as temp_file:
         write_fastas_with_all_genes(regions, temp_file.name)
-        _wall_start = time.time()
-        _cpu_start = resource.getrusage(resource.RUSAGE_CHILDREN)
         stdout = subprocessing.run_diamond_search(temp_file.name, database, mode="blastp", opts=extra_args)
-        _cpu_end = resource.getrusage(resource.RUSAGE_CHILDREN)
-        _wall = time.time() - _wall_start
-        _cpu = (_cpu_end.ru_utime - _cpu_start.ru_utime) + (_cpu_end.ru_stime - _cpu_start.ru_stime)
-        db_label = os.path.join(os.path.basename(os.path.dirname(database)), os.path.basename(database))
-        logging.info("CB-TIMING diamond db=%s regions=%d: wall=%.3fs cpu=%.3fs cores=%.2f",
-                     db_label, len(regions), _wall, _cpu, _cpu / _wall if _wall > 0 else 0.0)
     return stdout
 
 
