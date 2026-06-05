@@ -196,6 +196,18 @@ class TestExecutableArg(unittest.TestCase):
         assert options.executables.hmmscan == "/path/to/alt_hmmscan"
 
 
+def test_hmmer_engine_defaults_to_pyhmmer():
+    parser = args.build_parser(modules=[])
+    options = parser.parse_args([])
+    assert options.hmmer_engine == "pyhmmer"
+
+
+def test_hmmer_engine_accepts_subprocess():
+    parser = args.build_parser(modules=[])
+    options = parser.parse_args(["--hmmer-engine", "subprocess"])
+    assert options.hmmer_engine == "subprocess"
+
+
 class TestModuleArgs(unittest.TestCase):
     def test_bad_values(self):
         with self.assertRaisesRegex(ValueError, "Argument prefixes must be alphanumeric"):

@@ -1283,6 +1283,29 @@ def _preload_pfam_caches(options: ConfigType) -> None:
         pfamdb.preload_pfam_cutoffs(database)
         pfamdb.preload_pfam_mappings(database)
 
+    if getattr(options, "hmmer_engine", "subprocess") == "pyhmmer":
+        from antismash.common.subprocessing import _pyhmmer_backend
+        dbs: list[str] = []
+        from antismash.detection import hmm_detection
+        dbs.append(hmm_detection.HMM_FILE)
+
+        for module_name in ("clusterhmmer", "fullhmmer"):
+            if getattr(options, module_name, False):
+                version = getattr(options, f"{module_name}_pfamdb_version")
+                if version == "latest":
+                    version = pfamdb.find_latest_database_version(options.database_dir)
+                dbs.append(os.path.join(options.database_dir, "pfam", version, "Pfam-A.hmm"))
+        if getattr(options, "tigrfam", False):
+            dbs.append(os.path.join(options.database_dir, "tigrfam", "TIGRFam.hmm"))
+        # de-duplicate by path (clusterhmmer+fullhmmer may resolve to the same Pfam-A)
+        seen: set = set()
+        for db in dbs:
+            if db in seen or not os.path.exists(db):
+                continue
+            seen.add(db)
+            logging.info("Preloading pyhmmer profile block: %s", db)
+            _pyhmmer_backend.load_block(db)
+
     logging.info("Preloaded PFAM caches in %.1fs", time.monotonic() - preload_start)
 
 

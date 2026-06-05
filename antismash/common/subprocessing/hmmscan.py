@@ -49,6 +49,10 @@ def run_hmmscan(target_hmmfile: str, query_sequence: str, opts: List[str] = None
 
     config = get_config()
 
+    if getattr(config, "hmmer_engine", "subprocess") == "pyhmmer":
+        from antismash.common.subprocessing import _pyhmmer_backend
+        return _pyhmmer_backend.run_hmmscan_pyhmmer(target_hmmfile, query_sequence, opts=opts)
+
     # Check if the binary supports multithreading
     supports_multithreading = " --cpu " in run_hmmscan_help()
 

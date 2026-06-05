@@ -32,6 +32,14 @@ def run_hmmsearch(query_hmmfile: str, target_sequence: str, use_tempfile: bool =
     """
     config = get_config()
 
+    # Dispatch to pyhmmer in-process backend when requested
+    if getattr(config, "hmmer_engine", "subprocess") == "pyhmmer":
+        from antismash.common.subprocessing import _pyhmmer_backend
+        return _pyhmmer_backend.run_hmmsearch_pyhmmer(
+            query_hmmfile, target_sequence,
+            use_tempfile=use_tempfile, force_single_core=force_single_core,
+        )
+
     # Check if multithreading is disabled in the config
     multithreading_disabled = (config.get('hmmer3') and 'multithreading' in config.hmmer3
                                and not config.hmmer3.multithreading)

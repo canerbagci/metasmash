@@ -5,9 +5,11 @@
 # pylint: disable=use-implicit-booleaness-not-comparison,protected-access,missing-docstring
 
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from antismash.common import subprocessing
+from antismash.common.subprocessing import hmmscan as hmmscan_module
 from antismash.common.subprocessing import hmmscan
 
 from .helpers import DummyConfig, DummyResult
@@ -49,3 +51,26 @@ class TestFailureMessaging(unittest.TestCase):
         error = "Error: some error message"
         lines = [" ", "first", error, "next", "last"]
         self.check(expected=f"{error} next", stderr="\n".join(lines))
+
+
+def test_run_hmmscan_dispatches_to_pyhmmer_when_configured():
+    sentinel = ["pyhmmer-result"]
+    with mock.patch.object(hmmscan_module, "get_config") as cfg, \
+         mock.patch("antismash.common.subprocessing._pyhmmer_backend.run_hmmscan_pyhmmer",
+                    return_value=sentinel) as backend:
+        cfg.return_value.hmmer_engine = "pyhmmer"
+        result = hmmscan_module.run_hmmscan("/data/Pfam-A.hmm", ">q\nMAGIC", opts=["--cut_tc"])
+    backend.assert_called_once_with("/data/Pfam-A.hmm", ">q\nMAGIC", opts=["--cut_tc"])
+    assert result is sentinel
+
+
+def test_run_hmmscan_uses_subprocess_by_default():
+    fake = mock.Mock(); fake.successful.return_value = True; fake.stdout = ""
+    with mock.patch.object(hmmscan_module, "run_hmmscan_help", return_value=" --cpu "), \
+         mock.patch.object(hmmscan_module, "get_config") as cfg, \
+         mock.patch.object(hmmscan_module, "get_effective_cpus", return_value=1), \
+         mock.patch.object(hmmscan_module, "execute", return_value=fake) as ex:
+        cfg.return_value.executables.hmmscan = "hmmscan"
+        cfg.return_value.hmmer_engine = "subprocess"
+        hmmscan_module.run_hmmscan("/data/Pfam-A.hmm", ">q\nMAGIC")
+    ex.assert_called_once()

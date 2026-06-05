@@ -719,6 +719,14 @@ def debug_options() -> ModuleArgs:
                      action=argparse.BooleanOptionalAction,
                      default=False,
                      help="Generate a profiling report, disables multiprocess python.")
+    group.add_option('--hmmer-engine',
+                     dest='hmmer_engine',
+                     choices=["subprocess", "pyhmmer"],
+                     default="pyhmmer",
+                     type=str,
+                     help="HMM scanning backend: 'pyhmmer' (in-process, default) "
+                          "or 'subprocess' (the hmmscan/hmmsearch binaries). "
+                          "Default: %(default)s.")
     group.add_option('--skip-sanitisation',
                      dest='skip_sanitisation',
                      action=argparse.BooleanOptionalAction,
