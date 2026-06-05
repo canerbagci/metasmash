@@ -51,7 +51,7 @@ from antismash.outputs import html
 from antismash.support import genefinding
 from antismash.custom_typing import AntismashModule
 
-__version__ = "0.1.3.6"
+__version__ = "0.1.4"
 UPSTREAM_VERSION = "8.0.4"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml
 
 
@@ -795,29 +795,75 @@ def process_record_detection(record_and_results: tuple, options: ConfigType) -> 
         raise
 
 
-def process_record_analysis(record_and_results: tuple, options: ConfigType) -> tuple:
-    """ Process a single record with analysis modules only.
+def process_record_analysis(record_and_results: tuple, options: ConfigType,
+                            html_enabled: bool = False) -> tuple:
+    """ Process a single record with analysis modules only, and (in the worker) write its
+        per-record outputs so that work parallelises instead of serialising in the parent.
 
         Designed to be called by parallel_function for record-level parallelism.
 
         Arguments:
             record_and_results: a tuple of (record, module_results)
             options: antiSMASH config
+            html_enabled: if True, render the per-record region files here and return their
+                          per-region payloads for the parent to append to regions_data.js
 
         Returns:
-            a tuple of (record, module_results, timings)
+            a tuple of (record, module_results, timings, light_record, record_summary,
+            region_payloads, gbk_text); light_record/record_summary are None and region_payloads
+            empty when html is disabled or there are no regions; gbk_text is the pre-serialised
+            GenBank summary record (None when --no-summary-gbk or no regions)
     """
     record, module_results = record_and_results
 
     if record.skip or not record.get_regions():
-        return record, module_results, {}
+        return record, module_results, {}, None, None, [], None
 
     logging.info("Starting analysis for record: %s", record.id)
     try:
         analysis_modules = get_analysis_modules()
         timings = analyse_record(record, options, analysis_modules, module_results)
+        # Per-record output writing moved here (runs in parallel analysis workers) rather than
+        # in the parent's serial consume loop (the Phase-2 "drain"). Order matches the previous
+        # parent order: write_outputs, then add_to_record, then region rendering (which reads the
+        # annotations add_to_record applies). Only the shared-handle appends stay in the parent.
+        detection_names = {mod.__name__ for mod in get_detection_modules()}
+        analysis_outputs = [result for name, result in module_results.items()
+                            if isinstance(result, ModuleResults) and name not in detection_names]
+        for result in analysis_outputs:
+            result.write_outputs(record, options)
+        for result in analysis_outputs:
+            result.add_to_record(record)
+        light_record = record_summary = None
+        region_payloads: List[Any] = []
+        if html_enabled:
+            from antismash.outputs.html.generator import render_region_files_for_record
+            from antismash.common.layers import OptionsLayer
+            all_modules = get_all_modules()
+            filtered = {name: result for name, result in module_results.items()
+                        if isinstance(result, ModuleResults)}
+            light_record, record_summary, region_payloads = render_region_files_for_record(
+                record, filtered, options, all_modules, OptionsLayer(options, all_modules))
+        # Per-record GenBank rendering also moved into the worker (was a parent-serial "drain"
+        # step): the expensive record.to_biopython() + per-region .gbk writes run here, and the
+        # combined-summary record is pre-serialised to GenBank text so the parent only appends it
+        # to the shared summary handle. Runs after html rendering so to_biopython() sees the same
+        # post-render record state the parent's old to_biopython() did -> byte-identical output.
+        gbk_text = None
+        if options.region_gbks or options.summary_gbk:
+            bio_record = record.to_biopython()
+            add_antismash_comments([(record, bio_record)], options)
+            if options.region_gbks:
+                for region in record.get_regions():
+                    region.write_to_genbank(directory=options.output_dir, record=bio_record)
+            if options.summary_gbk:
+                gbk_buffer = StringIO()
+                SeqIO.write([bio_record], gbk_buffer, "genbank")
+                gbk_text = gbk_buffer.getvalue()
+            del bio_record
         logging.info("Completed analysis for record: %s", record.id)
-        return record, module_results, timings
+        return (record, module_results, timings, light_record, record_summary,
+                region_payloads, gbk_text)
     except Exception as e:
         logging.error("Error during analysis for record %s: %s", record.id, str(e))
         raise
@@ -1146,14 +1192,14 @@ def _safe_process_record_detection_streaming(record_tuple, options):
         return _RECORD_FAILED, bio_record.id, tb
 
 
-def _safe_process_record_analysis(record_and_results, options):
+def _safe_process_record_analysis(record_and_results, options, html_enabled=False):
     """ Safe wrapper for process_record_analysis.
         Returns _RECORD_FAILED sentinel on failure when abort_on_invalid_records is False.
     """
     rss_before_mb = memory_diagnostics.current_rss_mb() if memory_diagnostics.diagnostics_enabled(options) else None
     try:
-        result = process_record_analysis(record_and_results, options)
-        record, _, timings = result
+        result = process_record_analysis(record_and_results, options, html_enabled)
+        record, timings = result[0], result[2]
         _log_worker_memory("analysis", record, options, rss_before_mb, timings=timings)
         return result
     except Exception as e:
@@ -1271,9 +1317,11 @@ def _preload_analysis_caches(options: ConfigType) -> None:
         preload_matrices()
 
 
-# Default size used for both Phase 1 batch (records per parallel dispatch) and
-# Phase 2 window (records-with-regions accumulated before analysis fires).
+# Default Phase 2 window: records-with-regions accumulated before analysis fires.
 _STREAMING_DEFAULT_SIZE = 1024
+
+# Default Phase 1 detection batch
+_STREAMING_PHASE1_DEFAULT_SIZE = 8192
 
 # Back-compat alias for any external code or tests still importing the old name.
 _STREAMING_PHASE2_WINDOW_MIN = _STREAMING_DEFAULT_SIZE
@@ -1286,7 +1334,7 @@ def _compute_streaming_phase1_batch_size(options: ConfigType) -> int:
         raise ValueError("streaming_phase1_batch_size must be >= 0")
     if configured:
         return configured
-    return _STREAMING_DEFAULT_SIZE
+    return _STREAMING_PHASE1_DEFAULT_SIZE
 
 
 def _compute_streaming_phase2_window_size(options: ConfigType) -> int:
@@ -1352,13 +1400,15 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
         extra=phase2_window_start_extra,
         trace_snapshot=trace_snapshot,
     )
-    def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType]]:
+    _p2_html_enabled = options_layer is not None
+    def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType, bool]]:
         record_ids = list(phase2_inputs.keys())
         for rec_id in record_ids:
             if rec_id in phase2_inputs:
                 rec, mr = phase2_inputs[rec_id]
-                yield ((rec, mr), picklable_options_p2)
+                yield ((rec, mr), picklable_options_p2, _p2_html_enabled)
 
+    _t_prepass0 = time.perf_counter()
     # Pre-pass: run clusterblast's diamond ONCE over all window records (per DB), writing
     # per-record outputs the workers read, instead of N concurrent per-record diamonds.
     if (getattr(options, "streaming_batch_clusterblast", True)
@@ -1378,9 +1428,14 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
             shutil.rmtree(batch_dir, ignore_errors=True)
             picklable_options_p2.clusterblast_precomputed_dir = None
 
+    _prepass_s = time.perf_counter() - _t_prepass0
+    _loop0 = time.perf_counter()
+    _drain_s = 0.0  # parent-side per-record output writing
+    _drain_json = _drain_gbk = _drain_regions = 0.0
     for item in parallel_function_lazy(
             _safe_process_record_analysis, _analysis_args(),
             cpus=user_workers):
+        _body0 = time.perf_counter()
         phase2_seen += 1
         if item[0] == _RECORD_FAILED:
             _, record_id, error_msg = item
@@ -1410,45 +1465,37 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                 )
             continue
 
-        record, mod_results, analysis_timings = item
+        (record, mod_results, analysis_timings, light_record, record_summary,
+         region_payloads, gbk_text) = item
 
         if analysis_timings and record.id in timings_by_record:
             timings_by_record[record.id].update(analysis_timings)
         elif analysis_timings:
             timings_by_record[record.id] = analysis_timings
 
-        filtered_results: Dict[str, ModuleResults] = {}
-        for module_name, result in mod_results.items():
-            if isinstance(result, ModuleResults):
-                filtered_results[module_name] = result
-                if module_name not in detection_module_names:
-                    result.write_outputs(record, options)
-
-        for module_name, result in filtered_results.items():
-            if module_name not in detection_module_names:
-                result.add_to_record(record)
-
+        # write_outputs + add_to_record + region rendering now run in the analysis worker
+        # (parallel). The parent only does the shared-handle writes below, timed per-component.
+        _t = time.perf_counter()
         json_writer.write_record(record, mod_results)
+        _drain_json += time.perf_counter() - _t
 
-        if options.region_gbks or gbk_handle is not None:
-            bio_record = record.to_biopython()
-            add_antismash_comments([(record, bio_record)], options)
-            if options.region_gbks:
-                for region in record.get_regions():
-                    region.write_to_genbank(directory=options.output_dir,
-                                            record=bio_record)
-            if gbk_handle is not None:
-                SeqIO.write([bio_record], gbk_handle, "genbank")
-            del bio_record
+        # the worker already did to_biopython() + per-region .gbk writes and pre-serialised the
+        # summary record; the parent only appends that text to the shared combined-gbk handle.
+        _t = time.perf_counter()
+        if gbk_handle is not None and gbk_text is not None:
+            gbk_handle.write(gbk_text)
+        _drain_gbk += time.perf_counter() - _t
 
-        if options_layer is not None:
-            light_record, record_summary = generate_region_files_for_record(
-                record, filtered_results, options, all_modules,
-                options_layer, data_writer=data_writer,
-            )
-            if record_summary is not None:
-                lightweight_records.append(light_record)
-                record_summaries.append(record_summary)
+        # cheap serial append of the worker-encoded region data to the shared regions_data.js
+        # (the gzip+base64 encoding now happens in the worker, not here)
+        _t = time.perf_counter()
+        if data_writer is not None:
+            for anchor, encoded in region_payloads:
+                data_writer.write_region_encoded(anchor, encoded)
+        if record_summary is not None:
+            lightweight_records.append(light_record)
+            record_summaries.append(record_summary)
+        _drain_regions += time.perf_counter() - _t
 
         regions_count += 1
         _strip_record_for_overview(record)
@@ -1472,6 +1519,14 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                 extra=phase2_progress_extra,
                 trace_snapshot=trace_snapshot,
             )
+        _drain_s += time.perf_counter() - _body0
+    _loop_s = time.perf_counter() - _loop0
+    _wait_s = max(0.0, _loop_s - _drain_s)
+    logging.info("Phase 2 window %d breakdown: pre-pass %.0fs · worker-wait %.0fs · "
+                 "parent-drain %.0fs (json %.0fs, gbk %.0fs, regions-append %.0fs) "
+                 "(workers=%d, records=%d)",
+                 window_index, _prepass_s, _wait_s, _drain_s,
+                 _drain_json, _drain_gbk, _drain_regions, user_workers, phase2_seen)
     phase2_window_complete_extra: Dict[str, Union[int, str]] = {
         "window_index": window_index,
         "window_size": window_size,
@@ -2094,8 +2149,11 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
                 cpus=options.workers,
             )
 
-            # Update records/results from analysis output
-            for record, mod_results, timings in analysis_output:
+            # Update records/results from analysis output. process_record_analysis returns a
+            # 7-tuple (record, results, timings, + per-record output payloads); the classic path
+            # only consumes the first three (html_enabled is False, so the rest are empty/None).
+            for result in analysis_output:
+                record, mod_results, timings = result[0], result[1], result[2]
                 j = record_id_to_index[record.id]
                 results.records[j] = record
                 results.results[j] = mod_results

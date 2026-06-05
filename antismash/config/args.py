@@ -646,7 +646,7 @@ def advanced_options() -> ModuleArgs:
                      type=int,
                      default=0,
                      help="Override the streaming Phase 1 detection batch size. "
-                          "0 keeps the automatic default of 1024 records per "
+                          "0 keeps the automatic default of 8192 records per "
                           "parallel dispatch. (default: %(default)s)")
     group.add_option('--streaming-phase2-window-size',
                      dest='streaming_phase2_window_size',

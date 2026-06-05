@@ -165,18 +165,18 @@ class TestSafeProcessRecordFull(unittest.TestCase):
 
 class TestStreamingWindowHelpers(unittest.TestCase):
     def test_compute_phase1_batch_size(self):
-        from antismash.main import _STREAMING_DEFAULT_SIZE, _compute_streaming_phase1_batch_size
+        from antismash.main import _STREAMING_PHASE1_DEFAULT_SIZE, _compute_streaming_phase1_batch_size
         opts = type("Options", (), {
             "workers": 1,
             "streaming_phase1_batch_size": 0,
             "streaming_phase2_window_size": 0,
         })()
-        # Default is a flat _STREAMING_DEFAULT_SIZE regardless of --workers.
-        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_DEFAULT_SIZE
+        # Default is a flat _STREAMING_PHASE1_DEFAULT_SIZE regardless of --workers.
+        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_PHASE1_DEFAULT_SIZE
         opts.workers = 8
-        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_DEFAULT_SIZE
+        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_PHASE1_DEFAULT_SIZE
         opts.workers = 4096  # would have triggered the old workers*4 branch
-        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_DEFAULT_SIZE
+        assert _compute_streaming_phase1_batch_size(opts) == _STREAMING_PHASE1_DEFAULT_SIZE
         # Explicit override wins.
         opts.streaming_phase1_batch_size = 96
         assert _compute_streaming_phase1_batch_size(opts) == 96

@@ -163,7 +163,7 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert region.gene_count == 1
         assert region.product_to_category["test-product"] == "TEST-CATEGORY"
         assert region.most_related_area.description == "Known cluster"
-        data_writer.write_region.assert_called_once()
+        data_writer.write_region_encoded.assert_called_once()
 
     def test_generate_region_files_writes_legacy_region_file_with_data_writer(self):
         record = self._make_record()

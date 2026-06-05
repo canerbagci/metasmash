@@ -156,6 +156,15 @@ def _write_regions_index(lightweight_records: List[Dict[str, Any]],
         handle.write("var lazyLoading = true;\n")
 
 
+def encode_region_payload(region_json: Dict[str, Any],
+                          results: dict[str, json.JSONCompatible],
+                          html: str) -> str:
+    """ gzip + base64 encode one region's (json, results, html) for regions_data.js. """
+    payload = json.dumps({"region": region_json, "results": results, "html": html})
+    compressed = gzip.compress(payload.encode("utf-8"), compresslevel=6)
+    return base64.b64encode(compressed).decode("ascii")
+
+
 class StreamingRegionDataWriter:
     """ Writes all per-region data into a single compressed JS file.
 
@@ -172,18 +181,15 @@ class StreamingRegionDataWriter:
     def write_region(self, anchor: str, region_json: Dict[str, Any],
                      results: dict[str, json.JSONCompatible],
                      html: str) -> None:
-        """ Write a single region's data to the compressed file. """
-        payload = json.dumps({
-            "region": region_json,
-            "results": results,
-            "html": html,
-        })
-        compressed = gzip.compress(payload.encode("utf-8"), compresslevel=6)
-        b64 = base64.b64encode(compressed).decode("ascii")
+        """ Encode and write a single region's data to the compressed file. """
+        self.write_region_encoded(anchor, encode_region_payload(region_json, results, html))
+
+    def write_region_encoded(self, anchor: str, encoded: str) -> None:
+        """ Append an already gzip+base64-encoded region payload (from encode_region_payload). """
         if not self._first:
             self._handle.write(",\n")
         self._first = False
-        self._handle.write(f"  {json.dumps(anchor)}: \"{b64}\"")
+        self._handle.write(f"  {json.dumps(anchor)}: \"{encoded}\"")
 
     def finalize(self) -> None:
         """ Close the JS object literal. """
@@ -529,6 +535,28 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
                 lightweight JSON record dict (for the regions.js index),
                 StreamingRecordSummary if the record has regions (else None)
     """
+    light_record, summary, region_payloads = render_region_files_for_record(
+        record, record_results, options, all_modules, options_layer)
+    if data_writer is not None:
+        for anchor, encoded in region_payloads:
+            data_writer.write_region_encoded(anchor, encoded)
+    return light_record, summary
+
+
+def render_region_files_for_record(record: Record, record_results: Dict[str, ModuleResults],
+                                   options: ConfigType, all_modules: List[AntismashModule],
+                                   options_layer: OptionsLayer,
+                                   ) -> Tuple[Dict[str, Any], Optional["StreamingRecordSummary"],
+                                              List[Tuple[str, str]]]:
+    """ The heavy per-record region rendering.
+
+        Builds the JSON + HTML for each region and writes the per-region .js files, but does
+        not touch the shared regions_data.js (data_writer).
+
+        Returns:
+            (light_record, StreamingRecordSummary or None,
+             [(anchor, region_json, region_js_results, html_content), ...])
+    """
     # Build JSON data for this record
     json_record, js_results = _build_json_data_for_record(record, record_results, options, all_modules)
 
@@ -537,7 +565,7 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
     light_record["regions"] = [_make_lightweight_region(r) for r in json_record["regions"]]
 
     if not record.get_regions():
-        return light_record, None
+        return light_record, None, []
 
     # Build record layer and HTML sections
     record_layer = RecordLayer(record, None, options_layer)
@@ -547,7 +575,7 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
     svg_tooltip = _get_svg_tooltip()
     fragment_template = _get_fragment_template()
 
-    # Write region data for this record
+    region_payloads: List[Tuple[str, str]] = []
     for region_layer, json_region in zip(record_layer.regions, json_record["regions"]):
         anchor = region_layer.anchor_id
         content = fragment_template.render(
@@ -557,18 +585,14 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
             svg_tooltip=svg_tooltip,
             tta_name=tta.__name__, tfbs_name=tfbs.__name__,
         )
-        if data_writer is not None:
-            data_writer.write_region(
-                anchor, json_region,
-                js_results.get(anchor, {}),
-                content,
-            )
         regions_dir = _ensure_regions_dir(options.output_dir)
         _write_single_region_file(
             regions_dir, anchor, json_region, js_results, content,
         )
+        # encode here (in the worker) so the parent only does the cheap append
+        region_payloads.append((anchor, encode_region_payload(json_region, js_results.get(anchor, {}), content)))
 
-    return light_record, StreamingRecordSummary.from_record_layer(record_layer)
+    return light_record, StreamingRecordSummary.from_record_layer(record_layer), region_payloads
 
 
 def generate_streaming_dashboard(record_summaries: List[StreamingRecordSummary],
