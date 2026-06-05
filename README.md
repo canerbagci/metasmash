@@ -1,4 +1,4 @@
-# MetaSMASH
+# metaSMASH
 
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](https://anaconda.org/bioconda/metasmash)
 [![Bioconda version](https://anaconda.org/bioconda/metasmash/badges/version.svg)](https://anaconda.org/bioconda/metasmash)
@@ -10,7 +10,7 @@ A scalable fork of [antiSMASH](https://github.com/antismash/antismash) for metag
 
 ## What's different
 
-MetaSMASH adds a streaming pipeline on top of antiSMASH that scales to millions of input records with bounded memory usage:
+metaSMASH adds a streaming pipeline on top of antiSMASH that scales to millions of input records with bounded memory usage:
 
 - **Streaming pipeline** (`--streaming auto|on|off`) — two-phase processing (detection, then analysis) that processes records one at a time instead of loading all into memory. Auto-enabled for inputs with >10 records.
 - **Incremental output** — JSON and GenBank files are written per-record as they complete, so results are available even if a run is interrupted.

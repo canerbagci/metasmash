@@ -60,7 +60,8 @@ def test_run_hmmscan_dispatches_to_pyhmmer_when_configured():
                     return_value=sentinel) as backend:
         cfg.return_value.hmmer_engine = "pyhmmer"
         result = hmmscan_module.run_hmmscan("/data/Pfam-A.hmm", ">q\nMAGIC", opts=["--cut_tc"])
-    backend.assert_called_once_with("/data/Pfam-A.hmm", ">q\nMAGIC", opts=["--cut_tc"])
+    backend.assert_called_once_with("/data/Pfam-A.hmm", ">q\nMAGIC", opts=["--cut_tc"],
+                                    force_single_core=False)
     assert result is sentinel
 
 

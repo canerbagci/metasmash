@@ -22,6 +22,8 @@ import io
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from .base import get_effective_cpus
+
 @dataclass(eq=False)
 class _HSP:
     """Single reported domain, shaped like a Bio.SearchIO HSP."""
@@ -162,6 +164,7 @@ def run_hmmscan_pyhmmer(
     target_hmmfile: str,
     query_sequence: str,
     opts: Optional[List[str]] = None,
+    force_single_core: bool = False,
 ) -> List[_QueryResult]:
     """Scan query_sequence against target_hmmfile using pyhmmer in-process.
 
@@ -169,6 +172,7 @@ def run_hmmscan_pyhmmer(
         target_hmmfile:  Path to the .hmm database (pressed or plain).
         query_sequence:  FASTA-format string (one or more sequences).
         opts:            List of hmmscan option strings (see _opts_to_pipeline_kwargs).
+        force_single_core: if True, force cpus=1; otherwise use get_effective_cpus().
 
     Returns:
         List of _QueryResult objects in query input order, containing only
@@ -198,8 +202,9 @@ def run_hmmscan_pyhmmer(
 
     query_results: List[_QueryResult] = []
 
+    cpus = 1 if force_single_core else get_effective_cpus()
     for top_hits in pyhmmer.hmmer.hmmscan(
-        queries, block, cpus=1, Z=n_profiles, **pipeline_kwargs
+        queries, block, cpus=cpus, Z=n_profiles, **pipeline_kwargs
     ):
         raw_qname = top_hits.query.name
         query_name: str = raw_qname.decode() if isinstance(raw_qname, bytes) else raw_qname
@@ -262,8 +267,7 @@ def run_hmmsearch_pyhmmer(
         query_hmmfile:   Path to the .hmm file (profiles are the queries).
         target_sequence: FASTA-format string of target sequences to search.
         use_tempfile:    Accepted for API parity with the subprocess path; ignored
-        force_single_core: Accepted for API parity; ignored (pyhmmer runs with
-                         cpus=1 unconditionally to stay thread-safe in workers).
+        force_single_core: if True, force cpus=1; otherwise use get_effective_cpus().
 
     Returns:
         List of _HSearchQueryResult objects, one per profile, ordered by profile
@@ -294,7 +298,8 @@ def run_hmmsearch_pyhmmer(
 
     query_results: List[_HSearchQueryResult] = []
 
-    for top_hits in pyhmmer.hmmer.hmmsearch(block, sequences, cpus=1, Z=n_seqs):
+    cpus = 1 if force_single_core else get_effective_cpus()
+    for top_hits in pyhmmer.hmmer.hmmsearch(block, sequences, cpus=cpus, Z=n_seqs):
         # top_hits.query is the HMM (profile) that was searched
         raw_pname = top_hits.query.name
         profile_name: str = (raw_pname.decode()
