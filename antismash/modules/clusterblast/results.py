@@ -400,8 +400,10 @@ def _get_output_dir(options: ConfigType, searchtype: str) -> str:
     assert searchtype in ["clusterblast", "subclusterblast", "knownclusterblast"], searchtype
     output_dir = os.path.join(options.output_dir, searchtype)
 
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+    # exist_ok=True is required for streaming Phase 2: multiple worker processes
+    # analyse records in parallel and race to create this shared dir, so a plain
+    # check-then-mkdir raises FileExistsError for whichever worker loses the race.
+    os.makedirs(output_dir, exist_ok=True)
     if not os.path.isdir(output_dir):
         raise RuntimeError(f"{output_dir} exists as a file, but must be a directory")
     return output_dir
