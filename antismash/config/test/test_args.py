@@ -196,16 +196,16 @@ class TestExecutableArg(unittest.TestCase):
         assert options.executables.hmmscan == "/path/to/alt_hmmscan"
 
 
-def test_hmmer_engine_defaults_to_pyhmmer():
+def test_hmmer_engine_defaults_to_subprocess():
     parser = args.build_parser(modules=[])
     options = parser.parse_args([])
-    assert options.hmmer_engine == "pyhmmer"
-
-
-def test_hmmer_engine_accepts_subprocess():
-    parser = args.build_parser(modules=[])
-    options = parser.parse_args(["--hmmer-engine", "subprocess"])
     assert options.hmmer_engine == "subprocess"
+
+
+def test_hmmer_engine_accepts_pyhmmer():
+    parser = args.build_parser(modules=[])
+    options = parser.parse_args(["--hmmer-engine", "pyhmmer"])
+    assert options.hmmer_engine == "pyhmmer"
 
 
 class TestModuleArgs(unittest.TestCase):

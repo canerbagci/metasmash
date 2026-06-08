@@ -22,8 +22,6 @@ import io
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from .base import get_effective_cpus
-
 @dataclass(eq=False)
 class _HSP:
     """Single reported domain, shaped like a Bio.SearchIO HSP."""
@@ -202,9 +200,8 @@ def run_hmmscan_pyhmmer(
 
     query_results: List[_QueryResult] = []
 
-    cpus = 1 if force_single_core else get_effective_cpus()
     for top_hits in pyhmmer.hmmer.hmmscan(
-        queries, block, cpus=cpus, Z=n_profiles, **pipeline_kwargs
+        queries, block, cpus=1, Z=n_profiles, **pipeline_kwargs
     ):
         raw_qname = top_hits.query.name
         query_name: str = raw_qname.decode() if isinstance(raw_qname, bytes) else raw_qname
@@ -298,8 +295,7 @@ def run_hmmsearch_pyhmmer(
 
     query_results: List[_HSearchQueryResult] = []
 
-    cpus = 1 if force_single_core else get_effective_cpus()
-    for top_hits in pyhmmer.hmmer.hmmsearch(block, sequences, cpus=cpus, Z=n_seqs):
+    for top_hits in pyhmmer.hmmer.hmmsearch(block, sequences, cpus=1, Z=n_seqs):
         # top_hits.query is the HMM (profile) that was searched
         raw_pname = top_hits.query.name
         profile_name: str = (raw_pname.decode()

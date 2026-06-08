@@ -722,10 +722,10 @@ def debug_options() -> ModuleArgs:
     group.add_option('--hmmer-engine',
                      dest='hmmer_engine',
                      choices=["subprocess", "pyhmmer"],
-                     default="pyhmmer",
+                     default="subprocess",
                      type=str,
-                     help="HMM scanning backend: 'pyhmmer' (in-process, default) "
-                          "or 'subprocess' (the hmmscan/hmmsearch binaries). "
+                     help="HMM scanning backend: 'subprocess' (the hmmscan/hmmsearch "
+                          "binaries, default) or 'pyhmmer'. "
                           "Default: %(default)s.")
     group.add_option('--skip-sanitisation',
                      dest='skip_sanitisation',
