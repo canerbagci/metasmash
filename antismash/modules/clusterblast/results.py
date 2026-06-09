@@ -342,6 +342,11 @@ def write_clusterblast_output(options: ConfigType, record: Record,
         Returns:
             None
     """
+    # The per-region clusterblast text files are not referenced by the HTML output and produce
+    # one file per region per variant; off by default (see --clusterblast-text).
+    if not getattr(options, "clusterblast_text", False):
+        return
+
     assert isinstance(proteins, dict)
 
     region_number = cluster_result.region.get_region_number()

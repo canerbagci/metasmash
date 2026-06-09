@@ -102,6 +102,16 @@ def is_enabled(options: ConfigType) -> bool:
     return options.html_enabled or not options.minimal
 
 
+def copy_root_template(filename: str, output_dir: str) -> None:
+    """ Copy a single packaged file from this directory into the output directory root.
+
+        Used for the shared mibig_hits.html viewer page (opened from a gene's "MIBiG Hits"
+        link); it lives at the output root so its relative js/ and knownclusterblast/ paths
+        resolve under file://.
+    """
+    shutil.copy(path.get_full_path(__file__, filename), output_dir)
+
+
 def write(records: List[Record], results: List[Dict[str, ModuleResults]],
           options: ConfigType, all_modules: List[AntismashModule],
           skipped_record_count: int = 0) -> None:
@@ -132,6 +142,7 @@ def write(records: List[Record], results: List[Dict[str, ModuleResults]],
         logging.debug("Results page using antismash.js from remote host")
 
     copy_template_dir('images', output_dir)
+    copy_root_template("mibig_hits.html", output_dir)
 
     # Generate the original detailed results page (now regions.html)
     regions_content, records_with, records_without, options_layer, page_title = \

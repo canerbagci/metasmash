@@ -1643,6 +1643,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         if not os.path.exists(local_js):
             logging.debug("Results page using antismash.js from remote host")
         html.copy_template_dir('images', options.output_dir)
+        html.copy_root_template("mibig_hits.html", options.output_dir)
 
     # Save user's --workers for Phase 2 (analysis); Phase 1 uses cpus workers
     user_workers = options.workers

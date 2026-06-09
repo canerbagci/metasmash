@@ -747,6 +747,12 @@ def debug_options() -> ModuleArgs:
                      action=argparse.BooleanOptionalAction,
                      default=True,
                      help="Create a GenBank file for each region (default: %(default)s)")
+    group.add_option('--clusterblast-text',
+                     dest='clusterblast_text',
+                     action=argparse.BooleanOptionalAction,
+                     default=False,
+                     help="Write the per-region clusterblast/knownclusterblast/subclusterblast "
+                          "result text files. (default: %(default)s)")
     group.add_option('--memory-diagnostics',
                      dest='memory_diagnostics',
                      action=argparse.BooleanOptionalAction,

@@ -76,7 +76,7 @@
  <a href="{{urls['context']}}" target="_blank">View genomic context</a><br>
  {%- endif -%}
  {%- if urls['mibig'] -%}
-  <a href="{{urls['mibig']}}" target="_blank">MIBiG Hits</a><br>
+  <a href="mibig_hits.html?anchor={{urls['mibig']}}&gene={{feature.get_name()}}" target="_blank">MIBiG Hits</a><br>
  {%- endif -%}
  {%- if urls['transport'] -%}
   <a href="{{urls['transport']}}" target="_blank">TransportDB BLAST on this gene</a><br>

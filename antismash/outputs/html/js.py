@@ -5,6 +5,9 @@
     JSON for use by the webpage javascript
 """
 
+import base64
+import gzip
+import json
 import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -18,7 +21,6 @@ from antismash.config import ConfigType
 from antismash.detection.tigrfam.tigr_domain import TIGRDomain
 from antismash.modules import clusterblast, smcog_trees, tfbs_finder as tfbs, tta
 from antismash.outputs.html.area_packing import build_area_rows
-from antismash.outputs.html.generate_html_table import generate_html_table
 
 GO_URL = 'http://amigo.geneontology.org/amigo/term/'
 
@@ -96,6 +98,35 @@ def convert_source(source: Source, region: Region, name: str = None) -> Dict[str
     return result
 
 
+def _write_mibig_hits_data(options: ConfigType, anchor: str,
+                           mibig_entries: "dict[str, list[clusterblast.results.MibigEntry]]") -> None:
+    """ Writes one ``knownclusterblast/<anchor>_hits.js`` file holding every gene's MIBiG BLAST
+        hit rows for the region, as gzip+base64-encoded JSON.
+
+        Replaces the former per-gene ``<gene>_mibig_hits.html`` files (one per CDS).
+        These are now rendered by js/mibig_hits.js
+
+        Arguments:
+            options: antiSMASH options (for the output directory)
+            anchor: the region anchor, e.g. ``r39013c1`` (matches ``regions/<anchor>.js``)
+            mibig_entries: a mapping of query gene name to its list of MibigEntry hits
+    """
+    data = {
+        gene: [
+            [entry.gene_id, entry.gene_description, entry.mibig_id, entry.mibig_product,
+             f"{entry.percent_id}", f"{entry.coverage:.1f}", f"{entry.blast_score}", f"{entry.evalue}"]
+            for entry in entries
+        ]
+        for gene, entries in mibig_entries.items()
+    }
+    payload = json.dumps(data, separators=(",", ":"))
+    encoded = base64.b64encode(gzip.compress(payload.encode("utf-8"))).decode("ascii")
+    out_dir = os.path.join(options.output_dir, "knownclusterblast")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, f"{anchor}_hits.js"), "w", encoding="utf-8") as handle:
+        handle.write(f"mibigHits[{json.dumps(anchor)}]={json.dumps(encoded)};\n")
+
+
 def convert_regions(record: Record, options: ConfigType, result: Dict[str, ModuleResults]) -> List[Dict[str, Any]]:
     """Convert Region features to JSON"""
     js_regions = []
@@ -140,6 +171,8 @@ def convert_regions(record: Record, options: ConfigType, result: Dict[str, Modul
         js_region['product_categories'] = list(region.product_categories)
         js_region['cssClass'] = get_region_css(region)
         js_region['anchor'] = f"r{record.record_index}c{region.get_region_number()}"
+        if mibig_entries:
+            _write_mibig_hits_data(options, js_region['anchor'], mibig_entries)
         if record.has_multiple_sources():
             sources = [source for source in record.get_sources() if source.overlaps_with(region)]
             if len(sources) > 1:
@@ -339,12 +372,8 @@ def get_description(record: Record, feature: CDSFeature, type_: str,
 
     if mibig_result:
         assert feature.region
-        region_number = feature.region.get_region_number()
-        mibig_homology_file = os.path.join(options.output_dir, "knownclusterblast",
-                                           f"region{region_number}",
-                                           f"{feature.get_accession()}_mibig_hits.html")
-        generate_html_table(mibig_homology_file, mibig_result)
-        urls["mibig"] = mibig_homology_file[len(options.output_dir) + 1:]
+        # The per-region knownclusterblast/<anchor>_hits.js file (written in convert_regions)
+        urls["mibig"] = f"r{record.record_index}c{feature.region.get_region_number()}"
 
     if type_ == 'transport':
         urls["transport"] = ("http://blast.jcvi.org/er-blast/index.cgi?project=transporter;"
