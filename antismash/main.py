@@ -796,7 +796,8 @@ def process_record_detection(record_and_results: tuple, options: ConfigType) -> 
 
 
 def process_record_analysis(record_and_results: tuple, options: ConfigType,
-                            html_enabled: bool = False) -> tuple:
+                            html_enabled: bool = False,
+                            finalise_in_worker: bool = True) -> tuple:
     """ Process a single record with analysis modules only, and (in the worker) write its
         per-record outputs so that work parallelises instead of serialising in the parent.
 
@@ -823,6 +824,8 @@ def process_record_analysis(record_and_results: tuple, options: ConfigType,
     try:
         analysis_modules = get_analysis_modules()
         timings = analyse_record(record, options, analysis_modules, module_results)
+        if not finalise_in_worker:
+            return record, module_results, timings, None, None, [], None
         # Per-record output writing moved here (runs in parallel analysis workers) rather than
         # in the parent's serial consume loop (the Phase-2 "drain"). Order matches the previous
         # parent order: write_outputs, then add_to_record, then region rendering (which reads the
@@ -2179,7 +2182,7 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
             logging.info("Starting parallel processing of %d records for analysis", len(analysis_list))
             analysis_output = parallel_function(
                 process_record_analysis,
-                [(rec_res, picklable_options) for rec_res in analysis_list],
+                [(rec_res, picklable_options, False, False) for rec_res in analysis_list],
                 cpus=options.workers,
             )
 
