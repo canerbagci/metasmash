@@ -673,12 +673,16 @@ class Record:
         ensure_valid_locations([antismash_domain], self.is_circular(), len(self))
         assert antismash_domain.get_name()
         assert antismash_domain.tool
-        self._antismash_domains.append(antismash_domain)
-        self._antismash_domains_by_tool[antismash_domain.tool].append(antismash_domain)
-        if antismash_domain.get_name() in self._domains_by_name:
+        # Check for a name clash before mutating any of the indices
+        existing = self._domains_by_name.get(antismash_domain.get_name())
+        if existing is not None:
+            if existing.location == antismash_domain.location and existing.tool == antismash_domain.tool:
+                return
             raise SecmetInvalidInputError(
                 f"multiple Domain features have the same name for mapping: {antismash_domain.get_name()}"
             )
+        self._antismash_domains.append(antismash_domain)
+        self._antismash_domains_by_tool[antismash_domain.tool].append(antismash_domain)
         self._domains_by_name[antismash_domain.get_name()] = antismash_domain
         if antismash_domain.locus_tag:
             self._antismash_domains_by_cds_name[antismash_domain.locus_tag].append(antismash_domain)

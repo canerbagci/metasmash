@@ -1405,9 +1405,11 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
     from antismash.common.subprocessing import parallel_function_lazy
     from antismash.outputs.html.generator import generate_region_files_for_record
 
-    effective_threads = max(1, options.cpus // user_workers)
+    effective_workers = max(1, min(user_workers, len(phase2_inputs)))
+    effective_threads = max(1, options.cpus // effective_workers)
+    update_config({"workers": effective_workers})
     logging.info("Phase 2 window %d: Analysis of %d records with %d workers x %d threads",
-                 window_index, len(phase2_inputs), user_workers, effective_threads)
+                 window_index, len(phase2_inputs), effective_workers, effective_threads)
     phase2_window_start_extra: Dict[str, Union[int, str]] = {
         "window_index": window_index,
         "window_size": window_size,
@@ -1425,7 +1427,10 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
     )
     _p2_html_enabled = options_layer is not None
     def _analysis_args() -> Iterator[Tuple[Tuple[Record, Dict[str, Any]], ConfigType, bool]]:
-        record_ids = list(phase2_inputs.keys())
+        # Longest-processing-time-first: analyse the largest records first so a big
+        # long-read record does not become a serial tail behind finished workers.
+        record_ids = sorted(phase2_inputs.keys(),
+                            key=lambda rid: len(phase2_inputs[rid][0].seq), reverse=True)
         for rec_id in record_ids:
             if rec_id in phase2_inputs:
                 rec, mr = phase2_inputs[rec_id]
@@ -1457,7 +1462,7 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
     _drain_json = _drain_gbk = _drain_regions = 0.0
     for item in parallel_function_lazy(
             _safe_process_record_analysis, _analysis_args(),
-            cpus=user_workers):
+            cpus=effective_workers):
         _body0 = time.perf_counter()
         phase2_seen += 1
         if item[0] == _RECORD_FAILED:
@@ -1731,6 +1736,8 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         source_exhausted = True
                         break
 
+                    record_batch.sort(key=lambda rec_tuple: len(rec_tuple[0].seq), reverse=True)
+
                     phase1_batch_index += 1
                     pull_rate = len(record_batch) / pull_elapsed if pull_elapsed > 0 else 0.0
                     logging.info(
@@ -1738,9 +1745,12 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         "(%.0f records/s, single-threaded Biopython parse — workers idle)",
                         phase1_batch_index, len(record_batch), pull_elapsed, pull_rate,
                     )
-                    update_config({"workers": options.cpus})
-                    logging.info("Phase 1 batch %d: Detection with %d workers x 1 thread over %d records",
-                                 phase1_batch_index, options.cpus, len(record_batch))
+
+                    phase1_workers = max(1, min(options.cpus, len(record_batch)))
+                    phase1_threads = max(1, options.cpus // phase1_workers)
+                    update_config({"workers": phase1_workers})
+                    logging.info("Phase 1 batch %d: Detection with %d workers x %d thread(s) over %d records",
+                                 phase1_batch_index, phase1_workers, phase1_threads, len(record_batch))
                     phase1_batch_start_extra: Dict[str, Union[int, str]] = {
                         "batch_index": phase1_batch_index,
                         "batch_size": len(record_batch),
@@ -1765,7 +1775,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
 
                     for item in parallel_function_lazy(
                             _safe_process_record_detection_streaming, _record_args(),
-                            cpus=options.cpus):
+                            cpus=phase1_workers):
                         phase1_seen += 1
 
                         if item[0] == _RECORD_FAILED:
