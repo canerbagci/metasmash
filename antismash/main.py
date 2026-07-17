@@ -51,7 +51,7 @@ from antismash.outputs import html
 from antismash.support import genefinding
 from antismash.custom_typing import AntismashModule
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 UPSTREAM_VERSION = "8.0.4"  # antiSMASH version this fork is synced with; bumped by sync-upstream.yml
 
 
