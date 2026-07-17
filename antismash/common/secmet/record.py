@@ -643,12 +643,15 @@ class Record:
         """ Add the given CDSMotif to the record """
         assert isinstance(motif, (CDSMotif, Prepeptide)), f"{type(motif)}, {motif.type}"
         ensure_valid_locations([motif], self.is_circular(), len(self))
-        self._cds_motifs.append(motif)
         assert motif.get_name(), f"motif {motif} has no identifiers"
-        if motif.get_name() in self._domains_by_name:
+        existing = self._domains_by_name.get(motif.get_name())
+        if existing is not None:
+            if existing is motif or str(existing.location) == str(motif.location):
+                return
             raise SecmetInvalidInputError(
                 f"multiple Domain features have the same name for mapping: {motif.get_name()}"
             )
+        self._cds_motifs.append(motif)
         self._domains_by_name[motif.get_name()] = motif
         if isinstance(motif, Prepeptide):
             assert motif.tool is not None

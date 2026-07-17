@@ -1385,6 +1385,13 @@ def _take_record_batch(record_iterator: Iterator[Tuple[SeqRecord, int]],
     return batch
 
 
+def _clusterblast_batch_dir(options: ConfigType) -> str:
+    """ Return this process's private scratch dir for the batched clusterblast pre-pass.
+    """
+    scratch_root = os.environ.get("TMPDIR") or options.output_dir
+    return os.path.join(scratch_root, f".cb_batch_{os.getpid()}")
+
+
 def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
                        options: ConfigType,
                        picklable_options_p2: ConfigType,
@@ -1445,8 +1452,8 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
     if (getattr(options, "streaming_batch_clusterblast", True)
             and (getattr(options, "cb_general", False) or getattr(options, "cb_knownclusters", False))):
         from antismash.modules.clusterblast import precompute_clusterblast_diamond
-        # node-local scratch (avoids parallel-FS syscall overhead); falls back to output_dir
-        batch_dir = os.path.join(os.environ.get("TMPDIR") or options.output_dir, ".cb_batch")
+        # per-process node-local scratch; see _clusterblast_batch_dir for why it's PID-namespaced
+        batch_dir = _clusterblast_batch_dir(options)
         try:
             shutil.rmtree(batch_dir, ignore_errors=True)
             os.makedirs(batch_dir, exist_ok=True)
@@ -1945,8 +1952,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                 data_handle.close()
             if gbk_handle is not None:
                 gbk_handle.close()
-            shutil.rmtree(os.path.join(os.environ.get("TMPDIR") or options.output_dir, ".cb_batch"),
-                          ignore_errors=True)
+            shutil.rmtree(_clusterblast_batch_dir(options), ignore_errors=True)
 
     # Report failures
     if failed_count:

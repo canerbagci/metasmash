@@ -129,6 +129,35 @@ class TestAntismash(unittest.TestCase):
         assert res == expected
 
 
+class TestClusterblastBatchDir(unittest.TestCase):
+    """ The batched-clusterblast pre-pass scratch dir must be private per process, so
+        concurrent metasmash runs sharing a node's $TMPDIR can't clobber each other's
+        cache """
+    def test_uses_tmpdir_and_is_pid_namespaced(self):
+        options = Namespace(output_dir="/some/out")
+        with patch.dict(os.environ, {"TMPDIR": "/scratch/job"}):
+            with patch("antismash.main.os.getpid", return_value=1234):
+                path = main._clusterblast_batch_dir(options)
+        assert path == os.path.join("/scratch/job", ".cb_batch_1234")
+
+    def test_distinct_pids_get_distinct_dirs(self):
+        options = Namespace(output_dir="/some/out")
+        with patch.dict(os.environ, {"TMPDIR": "/scratch/job"}):
+            with patch("antismash.main.os.getpid", return_value=1111):
+                first = main._clusterblast_batch_dir(options)
+            with patch("antismash.main.os.getpid", return_value=2222):
+                second = main._clusterblast_batch_dir(options)
+        assert first != second
+
+    def test_falls_back_to_output_dir_without_tmpdir(self):
+        options = Namespace(output_dir="/some/out")
+        env = {k: v for k, v in os.environ.items() if k != "TMPDIR"}
+        with patch.dict(os.environ, env, clear=True):
+            with patch("antismash.main.os.getpid", return_value=1234):
+                path = main._clusterblast_batch_dir(options)
+        assert path == os.path.join("/some/out", ".cb_batch_1234")
+
+
 class TestErrorsInLogfile(unittest.TestCase):
     def setUp(self):
         destroy_config()

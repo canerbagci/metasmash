@@ -251,6 +251,42 @@ class TestStripping(unittest.TestCase):
         assert self.rec.get_antismash_domains_by_tool("b") == (b,)
 
 
+class TestAddCdsMotifIdempotency(unittest.TestCase):
+    """ metaSMASH's streaming pipeline calls a module's add_to_record twice for a
+        record (once in the Phase-2 analysis worker for worker-side output writing,
+        once again in the parent's annotate_records), so the identical CDS motif is
+        added twice. Re-adding the same motif must be a silent no-op, not a crash. """
+    def setUp(self):
+        self.rec = Record(Seq("A" * 100))
+
+    def test_readding_same_motif_object_is_noop(self):
+        motif = DummyCDSMotif(domain_id="ctg1_1_lassopeptide", start=0, end=6)
+        self.rec.add_cds_motif(motif)
+        assert self.rec.get_cds_motifs() == (motif,)
+        # re-adding the identical object must not raise and must not duplicate it
+        self.rec.add_cds_motif(motif)
+        assert self.rec.get_cds_motifs() == (motif,)
+
+    def test_readding_equal_motif_same_location_is_noop(self):
+        first = DummyCDSMotif(domain_id="ctg1_1_lassopeptide", start=0, end=6)
+        second = DummyCDSMotif(domain_id="ctg1_1_lassopeptide", start=0, end=6)
+        assert first is not second
+        self.rec.add_cds_motif(first)
+        # a distinct object with the same name and location is a re-add -> no-op
+        self.rec.add_cds_motif(second)
+        assert self.rec.get_cds_motifs() == (first,)
+
+    def test_genuine_name_collision_still_raises(self):
+        first = DummyCDSMotif(domain_id="ctg1_1_lassopeptide", start=0, end=6)
+        clashing = DummyCDSMotif(domain_id="ctg1_1_lassopeptide", start=10, end=20)
+        self.rec.add_cds_motif(first)
+        # same name but a genuinely different feature must still raise
+        with self.assertRaisesRegex(SecmetInvalidInputError, "multiple Domain features"):
+            self.rec.add_cds_motif(clashing)
+        # and the clashing motif must not have been recorded
+        assert self.rec.get_cds_motifs() == (first,)
+
+
 class TestRecordFeatureNumbering(unittest.TestCase):
     def setUp(self):
         self.pairs = [(50, 100), (10, 40), (700, 1000), (0, 9)]
