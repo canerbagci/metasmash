@@ -108,20 +108,24 @@ def get_antismash_js_url() -> str:
     return f"https://dl.secondarymetabolites.org/releases/as-js/{_ANTISMASH_JS_VERSION}/antismash.js"
 
 
-def cds_selector_span(identifier: str, additional_classes: list[str] = None) -> Markup:
+def cds_selector_span(identifier: str, *, additional_classes: list[str] = None,
+                      display_name: str = None) -> Markup:
     """ Builds an HTML span that will, when clicked, select the matching CDS
         in the javascript cluster viewer.
 
         Arguments:
             identifier: the name of the CDS
             additional_classes: any additional classes to add to the created span
+            display_name: an alternate label to display instead of the identifier itself
 
         Returns:
             a Markup instance, containing the created span
     """
+    assert identifier
+    display_name = display_name or identifier
     return Markup(
         f'<span class="cds-selector{" " if additional_classes else ""}{" ".join(additional_classes or [])}" '
-        f'data-locus="{identifier}">{identifier}</span>'
+        f'data-locus="{identifier}">{display_name}</span>'
     )
 
 
@@ -320,6 +324,7 @@ class _Template:  # pylint: disable=too-few-public-methods
         else:
             loader = _jinja2.FileSystemLoader(search_path)
         self.env = _jinja2.Environment(loader=loader, autoescape=True,
+                                       lstrip_blocks=True, trim_blocks=True,
                                        undefined=_jinja2.StrictUndefined)
 
     def render(self, **kwargs: Any) -> Markup:
