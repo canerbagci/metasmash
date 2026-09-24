@@ -9,6 +9,8 @@
     - _safe_process_record_full (main.py)
 """
 
+import gzip
+import json
 import os
 import tempfile
 import unittest
@@ -252,6 +254,8 @@ class TestWindowedStreamingPipeline(unittest.TestCase):
             "streaming_phase2_window_size": 0,
             "output_skip_records_without_regions": False,
             "summary_gbk": False,
+            "compress_summary": False,
+            "compress_json": False,
             "region_gbks": False,
             "zip_output": False,
             "html_taxonomy": "",
@@ -353,6 +357,89 @@ class TestWindowedStreamingPipeline(unittest.TestCase):
         writer = FakeWriter.instances[0]
         assert writer.finalized is True
         assert writer.records.count("rec5_nr") == 1
+
+    def test_streaming_compresses_json_and_summary_gbk(self):
+        from antismash.main import _run_antismash_streaming
+
+        class FakeRecord:
+            def __init__(self, record_id, record_index):
+                self.id = record_id
+                self.record_index = record_index
+                self.original_id = ""
+
+            def get_regions(self):
+                return [object()]
+
+        class FakeWriter:
+            def __init__(self, handle, *_args, **_kwargs):
+                self.handle = handle
+                self.records = []
+
+            def write_record(self, record, _results):
+                self.records.append(record.id)
+
+            def finalize(self, _timings=None):
+                self.handle.write('{"records": %s}' % json.dumps(self.records))
+
+        def fake_parallel(function, args, cpus=None):  # pylint: disable=unused-argument
+            for argset in args:
+                yield function(*argset)
+
+        def fake_detection(record_tuple, _options):
+            bio_record, record_index = record_tuple
+            return FakeRecord(bio_record.id, record_index), {}, {"detection": 1.0}
+
+        def fake_phase2_window(phase2_inputs, _options, _picklable_options_p2, _user_workers,
+                               json_writer, _all_modules, _options_layer, _data_writer, gbk_handle,
+                               _timings_by_record, _lightweight_records, _record_summaries,
+                               _detection_module_names, phase2_seen, regions_count, failed_count,
+                               trace_snapshot, _window_index, _window_size):
+            for record_id in list(phase2_inputs):
+                record, mod_results = phase2_inputs.pop(record_id)
+                json_writer.write_record(record, mod_results)
+                gbk_handle.write(f"LOCUS       {record_id}\n//\n")
+                regions_count += 1
+                phase2_seen += 1
+            return phase2_seen, regions_count, failed_count, trace_snapshot
+
+        records = [
+            (SeqRecord(Seq("ACGT"), id="rec0"), 1),
+            (SeqRecord(Seq("ACGT"), id="rec1"), 2),
+        ]
+        accepted_ids = {record.id: (record.id, index) for record, index in records}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            options = self._make_options(temp_dir)
+            options.summary_gbk = True
+            options.compress_summary = True
+            options.compress_json = True
+            with mock.patch("antismash.main.prepare_output_directory"), \
+                 mock.patch("antismash.main._preload_pfam_caches"), \
+                 mock.patch("antismash.main._preload_analysis_caches"), \
+                 mock.patch("antismash.main.get_all_modules", return_value=[]), \
+                 mock.patch("antismash.main.html.is_enabled", return_value=False), \
+                 mock.patch("antismash.main.record_processing.resolve_record_ids",
+                            return_value=(accepted_ids, len(records))), \
+                 mock.patch("antismash.main.record_processing.iter_accepted_records",
+                            return_value=iter(records)), \
+                 mock.patch("antismash.common.subprocessing.parallel_function_lazy",
+                            side_effect=fake_parallel), \
+                 mock.patch("antismash.main._safe_process_record_detection_streaming",
+                            side_effect=fake_detection), \
+                 mock.patch("antismash.main._run_phase2_window",
+                            side_effect=fake_phase2_window), \
+                 mock.patch("antismash.main.serialiser.StreamingJsonWriter", FakeWriter):
+                result = _run_antismash_streaming("input.gbk", options,
+                                                  prefetched_metadata=[("rec0", 10)])
+
+            assert result == 0
+            base = os.path.join(temp_dir, "streaming-test")
+            assert not os.path.exists(base + ".json")
+            assert not os.path.exists(base + ".gbk")
+            with gzip.open(base + ".json.gz", "rt", encoding="utf-8") as handle:
+                assert json.load(handle) == {"records": ["rec0", "rec1"]}
+            with gzip.open(base + ".gbk.gz", "rt", encoding="utf-8") as handle:
+                assert handle.read() == "LOCUS       rec0\n//\nLOCUS       rec1\n//\n"
 
     def test_streaming_writes_empty_html_assets_without_phase2(self):
         from antismash.main import _run_antismash_streaming

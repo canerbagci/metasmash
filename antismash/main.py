@@ -13,6 +13,7 @@ from datetime import datetime
 import importlib
 from io import StringIO
 import glob
+import gzip
 import logging
 import os
 import pkgutil
@@ -23,11 +24,12 @@ import tempfile
 import copy
 import gc
 import traceback
-from typing import cast, Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import cast, Any, Dict, Iterator, List, Optional, TextIO, Tuple, Union
 
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+from helperlibs.bio import seqio as hl_seqio
 
 from antismash.config import (
     ConfigType,
@@ -73,10 +75,11 @@ def _gather_detection_modules() -> Dict[DetectionStage, List[AntismashModule]]:
     for module_data in pkgutil.walk_packages([get_full_path(__file__, "detection")]):
         name = f"antismash.detection.{module_data.name}"
         module = cast(AntismashModule, importlib.import_module(name))
-        stage = getattr(module, "DETECTION_STAGE", "")
-        if not stage:
+        stage = getattr(module, "DETECTION_STAGE", None)
+        if stage is None:
             raise ValueError(f"detection module missing DETECTION_STAGE attribute: {name}")
-        assert isinstance(stage, DetectionStage)
+        if not isinstance(stage, DetectionStage):
+            raise TypeError(f"detection module {name} has invalid DETECTION_STAGE attribute: {stage}")
         if stage not in modules:
             raise ValueError(f"detection module with unknown detection stage: {stage}")
         modules[stage].append(module)
@@ -551,8 +554,10 @@ def write_outputs(results: serialiser.AntismashResults, options: ConfigType) -> 
     base_filename = canonical_base_filename(results.input_file, options.output_dir, options)
     if options.summary_gbk:
         combined_filename = base_filename + ".gbk"
+        if options.compress_summary:
+            combined_filename += ".gz"
         logging.debug("Writing final genbank file to '%s'", combined_filename)
-        SeqIO.write(bio_records, combined_filename, "genbank")
+        hl_seqio.write(bio_records, combined_filename)
 
     zipfile = base_filename + ".zip"
     if os.path.exists(zipfile):
@@ -706,7 +711,7 @@ def list_plugins() -> None:
     print("Available plugins")
     print("  Detection modules")
     for stage, modules in _DETECTION_MODULES.items():
-        simple_stage = str(stage).split(".")[1].replace("_", " ").capitalize()
+        simple_stage = stage.replace("_", " ").capitalize()
         print(f"    {simple_stage}")
         print_modules(modules, indent=6)
     for title, modules in [
@@ -1385,6 +1390,14 @@ def _take_record_batch(record_iterator: Iterator[Tuple[SeqRecord, int]],
     return batch
 
 
+def _open_text_output(filename: str, compress: bool) -> TextIO:
+    """ Open a streaming output file for text writing, gzip-compressed if requested.
+    """
+    if compress:
+        return cast(TextIO, gzip.open(filename, mode="wt", encoding="utf-8"))
+    return open(filename, "w", encoding="utf-8")
+
+
 def _clusterblast_batch_dir(options: ConfigType) -> str:
     """ Return this process's private scratch dir for the batched clusterblast pre-pass.
     """
@@ -1682,6 +1695,8 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     # Open the streaming JSON writer
     input_basename = os.path.basename(sequence_file)
     json_filename = canonical_base_filename(input_basename, options.output_dir, options) + ".json"
+    if options.compress_json:
+        json_filename += ".gz"
 
     all_modules = get_all_modules()
     options_layer = OptionsLayer(options, all_modules) if html_enabled else None
@@ -1733,7 +1748,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         extra=streaming_start_extra,
         trace_snapshot=trace_snapshot,
     )
-    with open(json_filename, "w", encoding="utf-8") as json_handle:
+    with _open_text_output(json_filename, options.compress_json) as json_handle:
         json_writer = serialiser.StreamingJsonWriter(
             json_handle, input_basename, __version__, options.taxon)
         try:
@@ -1922,8 +1937,10 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         combined_filename = canonical_base_filename(
                             input_basename, options.output_dir, options
                         ) + ".gbk"
+                        if options.compress_summary:
+                            combined_filename += ".gz"
                         logging.debug("Writing final genbank file to '%s'", combined_filename)
-                        gbk_handle = open(combined_filename, "w")
+                        gbk_handle = _open_text_output(combined_filename, options.compress_summary)
 
                     if options.region_gbks and window_index == 1:
                         logging.debug("Writing cluster-specific genbank files")
@@ -2215,8 +2232,14 @@ def _run_antismash(sequence_file: Optional[str], options: ConfigType) -> int:
         results.version, timings=results.timings_by_record, taxon=results.taxon)
     json_filename = canonical_base_filename(results.input_file, options.output_dir, options)
     json_filename += ".json"
+    if options.compress_json:
+        json_filename += ".gz"
     logging.debug("Writing json results to '%s'", json_filename)
-    json_results.write_to_file(json_filename)
+    if options.compress_json:
+        with gzip.open(json_filename, mode='wt', encoding="utf-8") as compressed:
+            json_results.write_to_file(compressed)
+    else:
+        json_results.write_to_file(json_filename)
 
     # now that the json is out of the way, annotate the record
     # otherwise we could double annotate some areas
