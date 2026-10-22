@@ -41,6 +41,14 @@
   <meta name="twitter:site" content="@antismash_dev" />
 </head>
 {% set multi_record = records | length + records_without_regions | length + skipped_record_count > 1 %}
+{# shown above and below the per-record overview tables #}
+{% macro overview_pagination() -%}
+     <div class="overview-pagination">
+       <button class="bgc-page-btn overview-page-prev" disabled>&laquo; Prev</button>
+       <span class="bgc-page-info overview-page-info"></span>
+       <button class="bgc-page-btn overview-page-next">Next &raquo;</button>
+     </div>
+{%- endmacro %}
 <body>
   <div id="header">
     {% include 'header.html' %}
@@ -80,11 +88,13 @@
    {% endif %}
    <div class="overview-layout">
     <div id="record-tables">
+     {% if records | length > 50 %}
+     {{ overview_pagination() }}
+     {% endif %}
      <div id="single-record-tables">
      {% set ns = namespace(svg_idx=0) %}
      {% for batch in records | batch(50) %}
-      <div class="overview-page" data-page="{{ loop.index0 }}"
-           {% if not loop.first %}style="display:none"{% endif %}>
+      {% set page_content %}
        {% for record in batch -%}
         {% set ns.svg_idx = ns.svg_idx + 1 %}
         <div class="record-overview-header">
@@ -95,24 +105,30 @@
           </div>
         </div>
         <div class="record-overview-details">
-          <svg id="record-minimap-{{ns.svg_idx}}" class="record-overview-svg" height="1" width="1"></svg>
+          <svg id="record-minimap-{{ns.svg_idx}}" class="record-overview-svg" data-record="{{record.id}}" height="1" width="1"></svg>
           {{ region_table.single_record_table(record, multi_record, options, get_region_css) }}
         </div>
        {%- endfor %}
+      {% endset %}
+      <div class="overview-page" data-page="{{ loop.index0 }}"
+           {% if not loop.first %}style="display:none"{% endif %}>
+      {% if loop.first %}
+       {{ page_content }}
+      {% else %}
+       {#- kept as text the browser doesn't build until the page is shown (see materializeOverview) #}
+       <script type="text/x-template" class="overview-deferred">{{ page_content | replace("</script", "<\\/script") }}</script>
+      {% endif %}
       </div>
      {% endfor %}
      </div>
      {% if records | length > 50 %}
-     <div class="overview-pagination" id="overview-pagination">
-       <button id="overview-page-prev" class="bgc-page-btn" disabled>&laquo; Prev</button>
-       <span id="overview-page-info" class="bgc-page-info"></span>
-       <button id="overview-page-next" class="bgc-page-btn">Next &raquo;</button>
-     </div>
+     {{ overview_pagination() }}
      {% endif %}
      {% if multi_record %}
      <div id="compact-record-table" style="display: none;">
       <div class="record-table">
-       {{ region_table.compact_records_table(records, options, get_region_css) }}
+       {#- kept as text the browser doesn't build until compact view is shown (see materializeOverview) #}
+       <script type="text/x-template" class="overview-deferred">{{ region_table.compact_records_table(records, options, get_region_css) | replace("</script", "<\\/script") }}</script>
       </div>
      </div>
      {% endif %}
@@ -147,7 +163,7 @@
   <script src="{{as_js_url}}"></script>
   <script src="regions.js"></script>
 {% if lazy_loading %}
-  <script src="regions_data.js"></script>
+  <script src="regions_data/index.js"></script>
   <script src="js/pako_inflate.min.js"></script>
   <script src="js/lazy_loader.js"></script>
 {% endif %}
@@ -161,6 +177,9 @@
 
     var PRELOAD_THRESHOLD = 30;
     var PAGINATION_THRESHOLD = 50;
+    // above this many regions, the region buttons are replaced by a short note:
+    // thousands of buttons are slow to build and unusable for navigation
+    var REGION_BUTTON_LIMIT = 100;
     var REGIONS_PER_PAGE = 50;
 
     /**
@@ -328,6 +347,8 @@
             }
         });
 
+        drawVisibleMinimaps();
+
         // 9. Update pagination controls
         updateDetailedPagination();
 
@@ -360,6 +381,15 @@
         var container = document.getElementById("region-button-container");
         if (!container) return;
         container.innerHTML = "";
+        if (anchors.length > REGION_BUTTON_LIMIT) {
+            var note = document.createElement("span");
+            note.className = "region-button-note";
+            note.style.padding = "0.3em 0.6em";
+            note.textContent = anchors.length.toLocaleString("en-US")
+                + " regions: use the overview table or the arrows to navigate";
+            container.appendChild(note);
+            return;
+        }
         for (var i = 0; i < anchors.length; i++) {
             var anchor = anchors[i];
             var r = all_regions[anchor];
@@ -382,6 +412,8 @@
     function buildPlaceholders(anchors) {
         var marker = document.getElementById("lazy-placeholder-anchor");
         if (!marker) return;
+        // for many regions, the lazy loader creates each container when its region is opened
+        if (anchors.length > REGION_BUTTON_LIMIT) return;
         for (var i = 0; i < anchors.length; i++) {
             var anchor = anchors[i];
             if (document.getElementById(anchor)) continue;
@@ -432,6 +464,9 @@
 
         // If no filter active, we're done
         if (!selectionSet) return null;
+
+        // the filtering below works on the rows of every overview page and the compact table
+        materializeOverview(document.getElementById("record-tables"));
 
         // Hide unselected overview table rows (handled by early CSS injection,
         // but also apply jQuery hide for robustness / non-lazy paths)
@@ -520,7 +555,7 @@
 
         // Show all pagination pages when filtering — the filtered set is small
         $(".overview-page").show();
-        $("#overview-pagination").hide();
+        $(".overview-pagination").hide();
 
         // Filter compact table rows
         $("#compact-record-table .linked-row").each(function () {
@@ -665,7 +700,8 @@
             if ($(".overview-page").length > 1) {
                 $(".overview-page").hide();
                 $(".overview-page").first().show();
-                $("#overview-pagination").show();
+                // the page controls only apply to the per-record view
+                $(".overview-pagination").toggle(!$("input.overview-switch-compact").prop("checked"));
             }
             // Restore compact table row order and visibility
             if (all_regions._savedCompactOrder) {
@@ -682,12 +718,65 @@
                 lazyRegionLoader._reinitState();
             }
 {% endif %}
+            drawVisibleMinimaps();
             // Remove banner and clear sessionStorage
             $("#bgc-filter-banner").remove();
             sessionStorage.removeItem("antismash_bgc_selection");
         });
 
         return selected;
+    }
+
+    /**
+     * Build the overview content kept as unparsed text inside the given element
+     * (overview pages after the first and the compact table), so that opening the
+     * page only builds what is shown first.
+     */
+    function materializeOverview(element) {
+        if (!element) return;
+        var deferred = element.querySelectorAll("script.overview-deferred");
+        for (var i = 0; i < deferred.length; i++) {
+            var range = document.createRange();
+            range.selectNode(deferred[i]);
+            deferred[i].parentNode.replaceChild(range.createContextualFragment(deferred[i].textContent), deferred[i]);
+        }
+        // minimap download buttons are bound to the elements existing at the time
+        if (deferred.length && typeof viewer !== "undefined" && viewer["initDownloadButtons"]) {
+            viewer["initDownloadButtons"]();
+        }
+    }
+
+    /**
+     * Draw the record minimaps of the overview sections currently shown.
+     * Drawing every record's minimap up front took seconds for large outputs.
+     */
+    var _recordsBySeqId = null;
+    function drawVisibleMinimaps() {
+        if (typeof viewer === "undefined" || !viewer["createRecordOverviews"]) return;
+        if (!_recordsBySeqId) {
+            _recordsBySeqId = {};
+            for (var i = 0; i < recordData.length; i++) {
+                _recordsBySeqId[recordData[i].seq_id] = recordData[i];
+            }
+        }
+        // createRecordOverviews() draws the Nth record given into #record-minimap-N
+        var records = [];
+        $(".overview-page").each(function () {
+            if (this.style.display === "none") return;
+            $(this).find("svg.record-overview-svg").each(function () {
+                if (this.getAttribute("data-drawn")) return;
+                if ($(this).closest(".record-overview-details")[0].style.display === "none") return;
+                var record = _recordsBySeqId[this.getAttribute("data-record")];
+                if (!record) return;
+                records[parseInt(this.id.replace("record-minimap-", ""), 10) - 1] = record;
+                this.setAttribute("data-drawn", "true");
+            });
+        });
+        var empty = {regions: []};
+        for (var j = 0; j < records.length; j++) {
+            if (!records[j]) records[j] = empty;
+        }
+        viewer["createRecordOverviews"](records);
     }
 
     // Overview record section pagination
@@ -698,39 +787,61 @@
         var totalPages = $pages.length;
 
         function showPage(idx) {
+            materializeOverview($pages[idx]);
             $pages.hide();
             $pages.eq(idx).show();
             currentPage = idx;
-            $("#overview-page-info").text("Page " + (idx + 1) + " of " + totalPages);
-            $("#overview-page-prev").prop("disabled", idx === 0);
-            $("#overview-page-next").prop("disabled", idx >= totalPages - 1);
-            // Trigger SVG redraw for newly-visible records
-            if (typeof viewer !== "undefined" && viewer["start"]) {
-{% if lazy_loading %}
-                viewer["start"](all_regions, resultsData, recordData);
-{% else %}
-                viewer["start"](all_regions, resultsData, recordData);
-{% endif %}
-            }
+            $(".overview-page-info").text("Page " + (idx + 1) + " of " + totalPages);
+            $(".overview-page-prev").prop("disabled", idx === 0);
+            $(".overview-page-next").prop("disabled", idx >= totalPages - 1);
+            drawVisibleMinimaps();
         }
 
-        $("#overview-page-prev").on("click", function () {
+        $(".overview-page-prev").on("click", function () {
             if (currentPage > 0) showPage(currentPage - 1);
         });
-        $("#overview-page-next").on("click", function () {
+        $(".overview-page-next").on("click", function () {
             if (currentPage < totalPages - 1) showPage(currentPage + 1);
         });
 
         // Set initial page info text
-        $("#overview-page-info").text("Page 1 of " + totalPages);
+        $(".overview-page-info").text("Page 1 of " + totalPages);
     }
 
     $(document).ready(function() {
         // Apply filter FIRST so all_regions.order is patched and only
         // needed placeholders exist before the lazy loader initialises
         var _bgcFilterSelected = applyBgcFilter();
+
+        // The overview page controls only page the per-record tables, so hide them in
+        // compact view (bound before the viewer starts, which triggers the initial state).
+        // With a dashboard selection active, every page is shown and they stay hidden.
+        $("input.overview-switch-compact").on("change", function () {
+            if ($(this).prop("checked")) {
+                materializeOverview(document.getElementById("compact-record-table"));
+            }
+            if ($("#bgc-filter-banner").length || $(".overview-page").length <= 1) return;
+            $(".overview-pagination").toggle(!$(this).prop("checked"));
+        });
 {% if lazy_loading %}
         lazyRegionLoader.init(all_regions, recordData, resultsData);
+        // start() bound its row handlers only to the rows built at the time (and they draw a
+        // region before it is loaded), so handle row clicks and type hovers for all rows here
+        $("#record-tables .linked-row, #record-tables .regbutton").off("click mouseover mouseout");
+        $("#record-tables").on("click", "tr.linked-row", function (event) {
+            if ($(event.target).closest("a").length) return;
+            window.location.hash = $(this).attr("data-anchor");
+        }).on("mouseover", ".regbutton", function () {
+            var classes = ($(this).attr("class") || "").split(" ");
+            if (classes.length < 2) return;
+            var $label = $("#region-type");
+            $label.data("orig_text", $label.text());
+            $label.text(classes[1] + ":");
+        }).on("mouseout", ".regbutton", function () {
+            var $label = $("#region-type");
+            $label.text($label.data("orig_text"));
+        });
+        drawVisibleMinimaps();
         if (_bgcFilterSelected) {
             var count = _bgcFilterSelected.length;
             if (count <= PRELOAD_THRESHOLD) {

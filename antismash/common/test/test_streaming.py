@@ -503,7 +503,7 @@ class TestWindowedStreamingPipeline(unittest.TestCase):
                                                   prefetched_metadata=[("rec0_nr", 10)])
 
             assert result == 0
-            assert os.path.exists(os.path.join(temp_dir, "regions_data.js"))
+            assert os.path.exists(os.path.join(temp_dir, "regions_data", "index.js"))
 
         finalize_html.assert_called_once()
         assert finalize_html.call_args.args[0] == []

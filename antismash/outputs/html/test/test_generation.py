@@ -4,6 +4,9 @@
 # for test files, silence irrelevant and noisy pylint warnings
 # pylint: disable=use-implicit-booleaness-not-comparison,protected-access,missing-docstring
 
+import base64
+import gzip
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -47,7 +50,7 @@ class TestOutput(unittest.TestCase):
             update_config({"output_dir": temp_dir})
             assert generate_webpage([record], [{}], self.options, get_all_modules())
 
-    def test_generate_webpage_writes_legacy_region_files(self):
+    def test_generate_webpage_writes_region_data_bundles(self):
         record = DummyRecord(seq="A" * 200)
         record.record_index = 1
         record.add_cds_feature(DummyCDS(start=20, end=80, locus_tag="cds1", translation="A" * 20))
@@ -61,8 +64,16 @@ class TestOutput(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             update_config({"output_dir": temp_dir})
             assert generate_webpage([record], [{}], self.options, get_all_modules())
-            assert os.path.exists(os.path.join(temp_dir, "regions_data.js"))
-            assert os.path.exists(os.path.join(temp_dir, "regions", "r1c1.js"))
+            assert _read_bundle_index(temp_dir) == {"r1c1": 1}
+            with open(os.path.join(temp_dir, "regions_data", "0001.js"), encoding="utf-8") as handle:
+                assert '_regionsData["r1c1"] = "' in handle.read()
+            assert not os.path.exists(os.path.join(temp_dir, "regions"))
+            assert not os.path.exists(os.path.join(temp_dir, "regions_data.js"))
+            with open(os.path.join(temp_dir, "region.html"), encoding="utf-8") as handle:
+                page = handle.read()
+            assert "js/region_page.js" in page
+            assert "regions_data/index.js" in page
+            assert "regions.js" not in page
 
 
 class TestJavascriptPresence(unittest.TestCase):
@@ -165,13 +176,13 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert region.most_related_area.description == "Known cluster"
         data_writer.write_region_encoded.assert_called_once()
 
-    def test_generate_region_files_writes_legacy_region_file_with_data_writer(self):
+    def test_generate_region_files_writes_to_data_bundles(self):
         record = self._make_record()
         options_layer = OptionsLayer(self.options, get_all_modules())
-        data_writer = Mock()
 
         with TemporaryDirectory() as temp_dir:
             update_config({"output_dir": temp_dir})
+            data_writer = generator.StreamingRegionDataWriter(temp_dir)
             with patch.object(generator, "_generate_html_sections_for_record", return_value={1: []}), \
                  patch.object(generator, "_get_fragment_template",
                               return_value=Mock(render=Mock(return_value="<div>fragment</div>"))):
@@ -179,15 +190,16 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
                     record, {}, self.options, get_all_modules(),
                     options_layer, data_writer=data_writer,
                 )
+            data_writer.finalize()
 
             assert light_record["regions"][0]["anchor"] == "r7c1"
             assert summary is not None
-            region_path = os.path.join(temp_dir, "regions", "r7c1.js")
-            assert os.path.exists(region_path)
-            with open(region_path, encoding="utf-8") as handle:
-                content = handle.read()
-            assert 'all_regions["r7c1"]' in content
-            assert 'regionHTML["r7c1"]' in content
+            # no per-region files
+            assert not os.path.exists(os.path.join(temp_dir, "regions"))
+            payload = _read_bundled_region(temp_dir, "r7c1")
+            assert payload["region"]["anchor"] == "r7c1"
+            assert payload["html"] == "<div>fragment</div>"
+
 
     def test_build_dashboard_data_from_summaries(self):
         summary = StreamingRecordSummary(
@@ -228,6 +240,40 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert data["bgc_table"][0]["gene_count"] == 4
         assert data["bgc_table"][0]["most_similar_known"] == "Known cluster"
         assert data["bgc_table"][0]["taxonomy"] == "Root; Test"
+
+    def test_finalize_streaming_html_output_defers_hidden_overview(self):
+        # 51 records: two overview pages of 50, plus the compact (multi-record) table
+        summaries, lightweight_records = [], []
+        for i in range(1, 52):
+            anchor = f"r{i}c1"
+            summaries.append(StreamingRecordSummary(
+                id=f"record-{i}", record_index=i, original_id="", source="", combined_source_count=1,
+                regions=[StreamingRegionSummary(
+                    anchor_id=anchor, region_number=1, start=5, end=45, length=40,
+                    products=["test-product"], product_categories=["TEST-CATEGORY"],
+                    css_class="TEST-CATEGORY test-product", contig_edge=False, gene_count=2,
+                    product_to_category={"test-product": "TEST-CATEGORY"},
+                )],
+            ))
+            lightweight_records.append({"seq_id": f"record-{i}", "regions": [{
+                "anchor": anchor, "start": 5, "end": 45, "idx": 1, "type": "test-product",
+                "products": ["test-product"], "product_categories": ["TEST-CATEGORY"],
+                "cssClass": "TEST-CATEGORY test-product"}]})
+
+        with TemporaryDirectory() as temp_dir:
+            update_config({"output_dir": temp_dir})
+            finalize_streaming_html_output(lightweight_records, summaries, self.options, get_all_modules())
+            with open(os.path.join(temp_dir, "regions.html"), encoding="utf-8") as handle:
+                content = handle.read()
+
+        deferred_start = '<script type="text/x-template" class="overview-deferred">'
+        blocks = [block.split("</script>", 1)[0] for block in content.split(deferred_start)[1:]]
+        # the second overview page and the compact table are deferred, the first page is not
+        assert len(blocks) == 2
+        assert 'data-anchor="#r51c1"' in blocks[0] and 'data-anchor="#r50c1"' not in blocks[0]
+        assert all(f'data-anchor="#r{i}c1"' in blocks[1] for i in range(1, 52))
+        first_page = content.split('data-page="0"', 1)[1].split('data-page="1"', 1)[0]
+        assert 'data-anchor="#r1c1"' in first_page and deferred_start not in first_page
 
     def test_finalize_streaming_html_output_sorts_record_summaries(self):
         record_b = StreamingRecordSummary(
@@ -294,5 +340,63 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
             )
             with open(os.path.join(temp_dir, "regions.html"), encoding="utf-8") as handle:
                 content = handle.read()
+            with open(os.path.join(temp_dir, "regions.js"), encoding="utf-8") as handle:
+                regions_js = handle.read()
 
         assert content.index("record-a") < content.index("record-b")
+        # the region order (used by the prev/next arrows) follows the same record order
+        order = json.loads(regions_js.split("var all_regions = ", 1)[1].split(";\n", 1)[0])["order"]
+        assert order == ["r1c1", "r2c1"]
+        records = json.loads(regions_js.split("var recordData = ", 1)[1].split(";\n", 1)[0])
+        assert [record["seq_id"] for record in records] == ["record-a", "record-b"]
+
+
+class TestRegionDataBundles(unittest.TestCase):
+    def test_bundles_roll_over_at_max_bytes(self):
+        with TemporaryDirectory() as temp_dir:
+            writer = generator.StreamingRegionDataWriter(temp_dir, max_bytes=100)
+            for i in range(5):
+                writer.write_region(f"r{i}c1", {"anchor": f"r{i}c1"}, {}, "x" * 200)
+            writer.finalize()
+            bundle_dir = os.path.join(temp_dir, generator.REGIONS_DATA_DIR)
+            # each region is larger than max_bytes, so each starts a new bundle
+            assert sorted(os.listdir(bundle_dir)) == ["0001.js", "0002.js", "0003.js",
+                                                      "0004.js", "0005.js", "index.js"]
+            for i in range(5):
+                assert _read_bundled_region(temp_dir, f"r{i}c1")["region"] == {"anchor": f"r{i}c1"}
+
+    def test_bundles_share_files_below_max_bytes(self):
+        with TemporaryDirectory() as temp_dir:
+            writer = generator.StreamingRegionDataWriter(temp_dir)
+            for i in range(5):
+                writer.write_region(f"r{i}c1", {"anchor": f"r{i}c1"}, {"mod": i}, "html")
+            writer.finalize()
+            index = _read_bundle_index(temp_dir)
+            assert index == {f"r{i}c1": 1 for i in range(5)}
+            assert _read_bundled_region(temp_dir, "r3c1")["results"] == {"mod": 3}
+
+    def test_empty_writer_still_writes_index(self):
+        with TemporaryDirectory() as temp_dir:
+            generator.StreamingRegionDataWriter(temp_dir).finalize()
+            assert _read_bundle_index(temp_dir) == {}
+            assert os.listdir(os.path.join(temp_dir, generator.REGIONS_DATA_DIR)) == ["index.js"]
+
+
+def _read_bundle_index(output_dir):
+    with open(os.path.join(output_dir, generator.REGIONS_DATA_DIR, "index.js"), encoding="utf-8") as handle:
+        content = handle.read()
+    prefix = "var _regionsDataIndex = "
+    assert content.startswith(prefix)
+    return json.loads(content[len(prefix):].rstrip().rstrip(";"))
+
+
+def _read_bundled_region(output_dir, anchor):
+    """ Decodes one region's payload from its bundle, as lazy_loader.js does """
+    bundle = _read_bundle_index(output_dir)[anchor]
+    path = os.path.join(output_dir, generator.REGIONS_DATA_DIR, f"{bundle:04d}.js")
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith(f'_regionsData["{anchor}"] = "'):
+                encoded = line.split('"')[3]
+                return json.loads(gzip.decompress(base64.b64decode(encoded)))
+    raise AssertionError(f"{anchor} not in bundle {bundle}")

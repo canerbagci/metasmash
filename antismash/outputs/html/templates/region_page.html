@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{page_title}} - region - antiSMASH results</title>
+  <style>img {width: 20px; height: 20px;}</style>
+  <link rel="stylesheet" type="text/css" href="css/{{options.taxon}}.css">
+</head>
+<body>
+  <div id="header">
+    {% include 'header.html' %}
+  </div>
+
+  <div class="dashboard-nav">
+    <a class="dashboard-nav-item" href="index.html">Dashboard</a>
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" id="region-page-detailed-link" href="regions.html">Detailed Results</a>
+  </div>
+
+  <div id="region-page-nav" class="detailed-pagination">
+    <button id="region-page-prev" class="bgc-page-btn" disabled>&laquo; Prev</button>
+    <span id="region-page-info" class="bgc-page-info"></span>
+    <button id="region-page-next" class="bgc-page-btn" disabled>Next &raquo;</button>
+  </div>
+
+  <div id="region-page-message" class="lazy-placeholder" style="display: none;"></div>
+  <div id="region-page-container"></div>
+
+{% include 'footer.html' %}
+
+  <script src="js/jquery.js"></script>
+  <script src="{{as_js_url}}"></script>
+  <script>
+    // filled in by the lazy loader from the region's regions_data bundle
+    var all_regions = {order: []};
+    var resultsData = {};
+    var regionHTML = {};
+  </script>
+  <script src="regions_data/index.js"></script>
+  <script src="js/pako_inflate.min.js"></script>
+  <script src="js/lazy_loader.js"></script>
+  <script src="js/region_page.js"></script>
+
+{% include 'svg_references.html' %}
+</body>
+</html>
