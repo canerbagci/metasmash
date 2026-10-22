@@ -812,7 +812,7 @@ def process_record_analysis(record_and_results: tuple, options: ConfigType,
             record_and_results: a tuple of (record, module_results)
             options: antiSMASH config
             html_enabled: if True, render the per-record region files here and return their
-                          per-region payloads for the parent to append to regions_data.js
+                          per-region payloads for the parent to append to the regions_data bundles
 
         Returns:
             a tuple of (record, module_results, timings, light_record, record_summary,
@@ -1537,7 +1537,7 @@ def _run_phase2_window(phase2_inputs: Dict[str, Tuple[Record, Dict[str, Any]]],
             gbk_handle.write(gbk_text)
         _drain_gbk += time.perf_counter() - _t
 
-        # cheap serial append of the worker-encoded region data to the shared regions_data.js
+        # cheap serial append of the worker-encoded region data to the regions_data bundles
         # (the gzip+base64 encoding now happens in the worker, not here)
         _t = time.perf_counter()
         if data_writer is not None:
@@ -1724,7 +1724,6 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
     source_exhausted = False
     analysis_caches_preloaded = False
     picklable_options_p2: Optional[ConfigType] = None
-    data_handle = None
     data_writer = None
     gbk_handle = None
 
@@ -1929,9 +1928,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
                         analysis_caches_preloaded = True
 
                     if html_enabled and data_writer is None:
-                        data_file_path = os.path.join(options.output_dir, "regions_data.js")
-                        data_handle = open(data_file_path, "w", encoding="utf-8")
-                        data_writer = StreamingRegionDataWriter(data_handle)
+                        data_writer = StreamingRegionDataWriter(options.output_dir)
 
                     if options.summary_gbk and gbk_handle is None:
                         combined_filename = canonical_base_filename(
@@ -1962,11 +1959,8 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
             if data_writer is not None:
                 data_writer.finalize()
             elif html_enabled:
-                data_file_path = os.path.join(options.output_dir, "regions_data.js")
-                with open(data_file_path, "w", encoding="utf-8") as empty_data_handle:
-                    StreamingRegionDataWriter(empty_data_handle).finalize()
-            if data_handle is not None:
-                data_handle.close()
+                # no regions: still write an (empty) index for the pages to load
+                StreamingRegionDataWriter(options.output_dir).finalize()
             if gbk_handle is not None:
                 gbk_handle.close()
             shutil.rmtree(_clusterblast_batch_dir(options), ignore_errors=True)

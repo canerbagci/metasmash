@@ -249,7 +249,7 @@ $(document).ready(function () {
                 simCell = '<span class="' + simClass + '" style="padding:0.1em 0.4em;border-radius:2px;">' + simContent + ' (' + bgc.similarity_percentage + '%)</span>';
             }
             html.push('<td>' + simCell + '</td>');
-            html.push('<td class="bgc-navigate-cell"><a href="regions.html#' + bgc.anchor_id + '" class="bgc-navigate-link" title="View region details">&#8250;</a></td>');
+            html.push('<td class="bgc-navigate-cell"><a href="region.html#' + bgc.anchor_id + '" class="bgc-navigate-link" title="View region details">&#8250;</a></td>');
             html.push('</tr>');
         }
 
@@ -955,6 +955,19 @@ $(document).ready(function () {
             delete _selectedAnchors[anchor];
         }
         updateSelectionUI();
+    });
+
+    $("#bgc-table-body").on("click", ".bgc-navigate-link", function () {
+        var anchors = new Array(_filteredRows.length);
+        for (var i = 0; i < _filteredRows.length; i++) {
+            anchors[i] = _filteredRows[i].anchor_id;
+        }
+        try {
+            sessionStorage.setItem("metasmash_region_nav", JSON.stringify(anchors));
+        } catch (e) {
+            console.warn("Could not store the region order for prev/next navigation", e);
+            try { sessionStorage.removeItem("metasmash_region_nav"); } catch (ignored) {}
+        }
     });
 
     // "View selected" button

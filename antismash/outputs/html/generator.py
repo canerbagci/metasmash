@@ -159,78 +159,88 @@ def _write_regions_index(lightweight_records: List[Dict[str, Any]],
 def encode_region_payload(region_json: Dict[str, Any],
                           results: dict[str, json.JSONCompatible],
                           html: str) -> str:
-    """ gzip + base64 encode one region's (json, results, html) for regions_data.js. """
+    """ gzip + base64 encode one region's (json, results, html) for the regions_data bundles. """
     payload = json.dumps({"region": region_json, "results": results, "html": html})
     compressed = gzip.compress(payload.encode("utf-8"), compresslevel=6)
     return base64.b64encode(compressed).decode("ascii")
 
 
+REGIONS_DATA_DIR = "regions_data"
+REGIONS_DATA_BUNDLE_BYTES = 5 * 1024 * 1024
+
+
 class StreamingRegionDataWriter:
-    """ Writes all per-region data into a single compressed JS file.
+    """ Writes all per-region data into a directory of compressed JS bundles.
 
         Each region's data (region JSON, module results, rendered HTML) is
-        individually gzip-compressed, base64-encoded, and stored as a
-        property of a JS object. This allows the browser to decompress
-        individual regions on demand without loading everything into memory.
+        individually gzip-compressed and base64-encoded, then appended to the
+        current bundle file (regions_data/0001.js, ...); a new bundle is started
+        once the current one reaches max_bytes. regions_data/index.js maps each
+        region to its bundle
     """
-    def __init__(self, handle: IO[str]) -> None:
-        self._handle = handle
-        self._first = True
-        handle.write("var _regionsData = {\n")
+    def __init__(self, output_dir: str, max_bytes: int = REGIONS_DATA_BUNDLE_BYTES) -> None:
+        self._dir = os.path.join(output_dir, REGIONS_DATA_DIR)
+        os.makedirs(self._dir, exist_ok=True)
+        self._max_bytes = max_bytes
+        self._handle: Optional[IO[str]] = None
+        self._bundle = 0
+        self._bundle_size = 0
+        self._index: Dict[str, int] = {}
+
+    def _start_bundle(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+        self._bundle += 1
+        path = os.path.join(self._dir, f"{self._bundle:04d}.js")
+        self._handle = open(path, "w", encoding="utf-8")  # pylint: disable=consider-using-with
+        self._handle.write("var _regionsData = _regionsData || {};\n")
+        self._bundle_size = 0
 
     def write_region(self, anchor: str, region_json: Dict[str, Any],
                      results: dict[str, json.JSONCompatible],
                      html: str) -> None:
-        """ Encode and write a single region's data to the compressed file. """
+        """ Encode and write a single region's data to the current bundle. """
         self.write_region_encoded(anchor, encode_region_payload(region_json, results, html))
 
     def write_region_encoded(self, anchor: str, encoded: str) -> None:
         """ Append an already gzip+base64-encoded region payload (from encode_region_payload). """
-        if not self._first:
-            self._handle.write(",\n")
-        self._first = False
-        self._handle.write(f"  {json.dumps(anchor)}: \"{encoded}\"")
+        if self._handle is None or self._bundle_size >= self._max_bytes:
+            self._start_bundle()
+        assert self._handle is not None
+        line = f"_regionsData[{json.dumps(anchor)}] = \"{encoded}\";\n"
+        self._handle.write(line)
+        self._bundle_size += len(line)
+        self._index[anchor] = self._bundle
 
     def finalize(self) -> None:
-        """ Close the JS object literal. """
-        self._handle.write("\n};\n")
+        """ Close the last bundle and write the region -> bundle index. """
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+        with open(os.path.join(self._dir, "index.js"), "w", encoding="utf-8") as handle:
+            handle.write(f"var _regionsDataIndex = {json.dumps(self._index)};\n")
 
 
 def _write_compressed_data_file(output_dir: str,
                                 per_region_json: Dict[str, Dict[str, Any]],
                                 module_results: dict[str, dict[str, json.JSONCompatible]],
                                 region_html: Dict[str, str]) -> None:
-    """ Writes a single regions_data.js containing all region data compressed.
-
-        Used by the classic (non-streaming) path as an alternative to
-        writing thousands of individual per-region .js files.
-    """
-    data_path = os.path.join(output_dir, "regions_data.js")
-    with open(data_path, "w", encoding="utf-8") as handle:
-        writer = StreamingRegionDataWriter(handle)
-        for anchor, region_json in per_region_json.items():
-            results = module_results.get(anchor, {})
-            html = region_html.get(anchor, "")
-            writer.write_region(anchor, region_json, results, html)
-        writer.finalize()
+    """ Writes the compressed regions_data bundles for all regions (classic path). """
+    writer = StreamingRegionDataWriter(output_dir)
+    for anchor, region_json in per_region_json.items():
+        results = module_results.get(anchor, {})
+        html = region_html.get(anchor, "")
+        writer.write_region(anchor, region_json, results, html)
+    writer.finalize()
 
 
-def _write_single_region_file(regions_dir: str, anchor: str,
-                              region_json: Dict[str, Any],
-                              module_results: dict[str, dict[str, json.JSONCompatible]],
-                              content: str) -> None:
-    """ Writes one region's complete legacy .js file.
-
-        These per-region files are kept as a compatibility fallback for
-        standalone/local browsing when the single regions_data.js payload is
-        unavailable.
-    """
-    js_path = os.path.join(regions_dir, f"{anchor}.js")
-    with open(js_path, "w", encoding="utf-8") as fh:
-        fh.write(f"all_regions[{json.dumps(anchor)}] = {json.dumps(region_json)};\n")
-        if anchor in module_results:
-            fh.write(f"resultsData[{json.dumps(anchor)}] = {json.dumps(module_results[anchor])};\n")
-        fh.write(f"regionHTML[{json.dumps(anchor)}] = {json.dumps(content)};\n")
+def _write_region_page(options_layer: OptionsLayer, page_title: str, as_js_url: str,
+                       output_dir: str) -> None:
+    """ Writes region.html, the lightweight single-region page the dashboard links to. """
+    template = FileTemplate(os.path.join(TEMPLATE_PATH, "region_page.html"))
+    content = template.render(options=options_layer, page_title=page_title, as_js_url=as_js_url)
+    with open(os.path.join(output_dir, "region.html"), "w", encoding="utf-8") as handle:
+        handle.write(_strip_leading_whitespace(content))
 
 
 def _render_all_region_html(record_layers: List[RecordLayer],
@@ -272,22 +282,17 @@ def _write_all_region_data(record_layers: List[RecordLayer],
                             options: ConfigType,
                             options_layer: OptionsLayer,
                             svg_tooltip: str) -> None:
-    """ Renders all region HTML and writes a single compressed regions_data.js. """
+    """ Renders all region HTML and writes the compressed regions_data bundles. """
     region_html = _render_all_region_html(
         record_layers, per_region_json, results_by_record_id,
         html_sections, options_layer, svg_tooltip,
     )
     _write_compressed_data_file(options.output_dir, per_region_json, module_results, region_html)
-    regions_dir = _ensure_regions_dir(options.output_dir)
-    for anchor, content in region_html.items():
-        _write_single_region_file(
-            regions_dir, anchor, per_region_json[anchor], module_results, content,
-        )
 
 
 def write_regions_js(records: List[Dict[str, Any]], output_dir: str,
                      module_results: dict[str, dict[str, json.JSONCompatible]]) -> None:
-    """ Writes a lightweight regions.js index plus a compressed regions_data.js.
+    """ Writes a lightweight regions.js index plus compressed regions_data bundles.
 
         NOTE: This is the legacy entry point used by the classic (non-streaming)
         path when called without HTML fragment data. Per-region data written here
@@ -401,7 +406,6 @@ def _build_record_layers(records: List[Record], results: List[Dict[str, ModuleRe
 
 _CACHED_FRAGMENT_TEMPLATE: Optional[FileTemplate] = None
 _CACHED_SVG_TOOLTIP: Optional[str] = None
-_REGIONS_DIR_CREATED: Optional[str] = None
 
 
 def _get_fragment_template() -> FileTemplate:
@@ -418,16 +422,6 @@ def _get_svg_tooltip() -> str:
     if _CACHED_SVG_TOOLTIP is None:
         _CACHED_SVG_TOOLTIP = _build_svg_tooltip()
     return _CACHED_SVG_TOOLTIP
-
-
-def _ensure_regions_dir(output_dir: str) -> str:
-    """Create the regions/ subdirectory once, return its path."""
-    global _REGIONS_DIR_CREATED
-    regions_dir = os.path.join(output_dir, "regions")
-    if _REGIONS_DIR_CREATED != regions_dir:
-        os.makedirs(regions_dir, exist_ok=True)
-        _REGIONS_DIR_CREATED = regions_dir
-    return regions_dir
 
 
 def _build_svg_tooltip() -> str:
@@ -522,9 +516,8 @@ def generate_region_files_for_record(record: Record, record_results: Dict[str, M
         data immediately. Returns lightweight record metadata for the index
         and the RecordLayer (or None if no regions).
 
-        When data_writer is provided, region data is written to the single
-        compressed regions_data.js file. Otherwise falls back to writing
-        individual per-region .js files.
+        When data_writer is provided, region data is appended to the
+        compressed regions_data bundles.
 
         This function is called incrementally as each record completes analysis,
         keeping memory bounded by writing and discarding per-region JSON data
@@ -550,12 +543,12 @@ def render_region_files_for_record(record: Record, record_results: Dict[str, Mod
                                               List[Tuple[str, str]]]:
     """ The heavy per-record region rendering.
 
-        Builds the JSON + HTML for each region and writes the per-region .js files, but does
-        not touch the shared regions_data.js (data_writer).
+        Builds the JSON + HTML for each region and encodes it, but does not touch the
+        shared regions_data bundles (data_writer).
 
         Returns:
             (light_record, StreamingRecordSummary or None,
-             [(anchor, region_json, region_js_results, html_content), ...])
+             [(anchor, encoded region payload), ...])
     """
     # Build JSON data for this record
     json_record, js_results = _build_json_data_for_record(record, record_results, options, all_modules)
@@ -584,10 +577,6 @@ def render_region_files_for_record(record: Record, record_results: Dict[str, Mod
             sections=html_sections,
             svg_tooltip=svg_tooltip,
             tta_name=tta.__name__, tfbs_name=tfbs.__name__,
-        )
-        regions_dir = _ensure_regions_dir(options.output_dir)
-        _write_single_region_file(
-            regions_dir, anchor, json_region, js_results, content,
         )
         # encode here (in the worker) so the parent only does the cheap append
         region_payloads.append((anchor, encode_region_payload(json_region, js_results.get(anchor, {}), content)))
@@ -634,6 +623,11 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
     _t0 = _time.monotonic()
     options_layer = OptionsLayer(options, all_modules)
 
+    record_order = {"".join(char for char in summary.id if char in string.printable): summary.record_index
+                    for summary in record_summaries}
+    lightweight_records = sorted(lightweight_records,
+                                 key=lambda light: record_order.get(light["seq_id"], float("inf")))
+
     regions_index: Dict[str, Any] = {"order": []}
     for light_record in lightweight_records:
         for light_region in light_record["regions"]:
@@ -671,6 +665,7 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
     regions_content = _strip_leading_whitespace(regions_content)
     with open(os.path.join(options.output_dir, "regions.html"), "w", encoding="utf-8") as fh:
         fh.write(regions_content)
+    _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
     _t_overview = _time.monotonic()
 
     dashboard_content = generate_streaming_dashboard(
@@ -747,6 +742,7 @@ def finalize_html_output(lightweight_records: List[Dict[str, Any]],
     regions_content = _strip_leading_whitespace(regions_content)
     with open(os.path.join(options.output_dir, "regions.html"), "w", encoding="utf-8") as fh:
         fh.write(regions_content)
+    _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
 
     # Generate the dashboard
     dashboard_content = generate_dashboard(
@@ -799,6 +795,8 @@ def generate_webpage(records: List[Record], results: List[Dict[str, ModuleResult
                               as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__,
                               lazy_loading=True,
                               )
+
+    _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
 
     # Phase 2: Render HTML and write compressed data file
     _write_all_region_data(record_layers_with_regions, per_region_json, js_results,

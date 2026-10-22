@@ -1,11 +1,10 @@
 /* Lazy-loading module for per-region data and HTML fragments.
  *
- * Region data is stored in a single compressed file (regions_data.js) as a
- * JS object mapping anchor -> base64-encoded gzipped JSON. Each region is
- * decompressed on demand using DecompressionStream (with pako fallback).
- *
- * This replaces the previous approach of one <script> per region, reducing
- * thousands of tiny files to a single data file while keeping file:// support.
+ * Region data is stored in compressed bundles (regions_data/0001.js, ...) of a
+ * few MB each, which add anchor -> base64-encoded gzipped JSON entries to
+ * _regionsData. regions_data/index.js maps each anchor to its bundle. Only the
+ * bundle of a region being shown is loaded (via <script>, so file:// works) and
+ * only that region is decompressed, using DecompressionStream (with pako fallback).
  */
 var lazyRegionLoader = (function () {
     "use strict";
@@ -22,6 +21,13 @@ var lazyRegionLoader = (function () {
 
     // O(1) anchor -> {recordIndex, regionIndex} map, built once in init()
     var _anchorMap = {};
+
+    // Anchors whose currently injected HTML has had viewer handlers bound
+    var _bound = {};
+
+    // Bundle loading state: number -> "loading" | "loaded", plus waiting callbacks
+    var _bundles = {};
+    var _bundleCallbacks = {};
 
     // Whether the browser supports DecompressionStream
     var _hasDecompressionStream = typeof DecompressionStream !== "undefined";
@@ -109,6 +115,8 @@ var lazyRegionLoader = (function () {
         if (!container) {
             return;
         }
+        // fresh DOM, so any previously bound handlers are gone
+        _bound[anchor] = false;
         if (typeof regionHTML !== "undefined" && regionHTML[anchor]) {
             container.innerHTML = regionHTML[anchor];
         } else {
@@ -135,8 +143,61 @@ var lazyRegionLoader = (function () {
         }
     }
 
+    /** Create the hidden container a region's HTML is injected into, unless it exists.
+     *  Returns whether it was created. */
+    function _ensureContainer(anchor) {
+        if (document.getElementById(anchor)) {
+            return false;
+        }
+        var div = document.createElement("div");
+        div.className = "page";
+        div.id = anchor;
+        div.setAttribute("data-lazy", "true");
+        div.style.display = "none";
+        div.innerHTML = '<div class="lazy-placeholder"><div class="loading-spinner"></div>'
+            + '<p>Loading region ' + anchor.replace(/^r(\d+)c(\d+)$/, "$1.$2") + '...</p></div>';
+        var marker = document.getElementById("lazy-placeholder-anchor");
+        if (marker) {
+            marker.parentNode.insertBefore(div, marker.nextSibling);
+        } else {
+            document.body.appendChild(div);
+        }
+        return true;
+    }
+
+    /** Load a regions_data bundle once, then call the callback (ok: true/false) */
+    function _loadBundle(bundle, callback) {
+        if (_bundles[bundle] === "loaded") {
+            callback(true);
+            return;
+        }
+        _bundleCallbacks[bundle] = _bundleCallbacks[bundle] || [];
+        _bundleCallbacks[bundle].push(callback);
+        if (_bundles[bundle] === "loading") {
+            return;
+        }
+        _bundles[bundle] = "loading";
+        var finish = function (ok) {
+            _bundles[bundle] = ok ? "loaded" : undefined;
+            var cbs = _bundleCallbacks[bundle];
+            _bundleCallbacks[bundle] = [];
+            for (var i = 0; i < cbs.length; i++) {
+                cbs[i](ok);
+            }
+        };
+        var script = document.createElement("script");
+        script.src = "regions_data/" + ("000" + bundle).slice(-Math.max(4, String(bundle).length)) + ".js";
+        script.onload = function () { finish(true); };
+        script.onerror = function () { finish(false); };
+        document.head.appendChild(script);
+    }
+
     /** Core loading routine for a single anchor */
     function _load(anchor, callback) {
+        if (_ensureContainer(anchor) && _state[anchor] === "loaded") {
+            // its container had been removed (detailed pagination): inject it again
+            _injectHTML(anchor);
+        }
         if (_state[anchor] === "loaded") {
             if (callback) { callback(); }
             return;
@@ -154,51 +215,92 @@ var lazyRegionLoader = (function () {
             _callbacks[anchor] = [callback];
         }
 
-        // Check if compressed data is available
-        if (typeof _regionsData !== "undefined" && _regionsData[anchor]) {
-            var b64 = _regionsData[anchor];
-            var bytes = _b64ToBytes(b64);
-
-            _gunzip(bytes).then(function (decompressed) {
-                var jsonStr = new TextDecoder().decode(decompressed);
-                var data = JSON.parse(jsonStr);
-
-                // Populate the global data structures
-                _regions[anchor] = data.region;
-                if (data.results) {
-                    _results[anchor] = data.results;
-                }
-                if (data.html) {
-                    regionHTML[anchor] = data.html;
-                }
-
-                // Free the base64 string to reduce memory
-                delete _regionsData[anchor];
-
-                _patchRecordData(anchor);
-                _injectHTML(anchor);
-                _state[anchor] = "loaded";
-                _fireCallbacks(anchor);
-            }).catch(function (err) {
-                console.warn("Failed to decompress data for region: " + anchor, err);
+        if (typeof _regionsData === "undefined" || !_regionsData[anchor]) {
+            var bundle = typeof _regionsDataIndex !== "undefined" ? _regionsDataIndex[anchor] : undefined;
+            if (bundle === undefined) {
+                console.warn("No data found for region: " + anchor);
                 _state[anchor] = "pending";
+                return;
+            }
+            _loadBundle(bundle, function (ok) {
+                if (!ok || typeof _regionsData === "undefined" || !_regionsData[anchor]) {
+                    console.warn("Failed to load data for region: " + anchor);
+                    _state[anchor] = "pending";
+                    return;
+                }
+                _decode(anchor);
             });
-        } else {
-            // Fallback: try loading individual file via script injection
-            var script = document.createElement("script");
-            script.src = "regions/" + anchor + ".js";
-            script.onload = function () {
-                _patchRecordData(anchor);
-                _injectHTML(anchor);
-                _state[anchor] = "loaded";
-                _fireCallbacks(anchor);
-            };
-            script.onerror = function () {
-                console.warn("Failed to load data for region: " + anchor);
-                _state[anchor] = "pending";
-            };
-            document.head.appendChild(script);
+            return;
         }
+        _decode(anchor);
+    }
+
+    /** Decompress a loaded region's data and inject it into the page */
+    function _decode(anchor) {
+        var bytes = _b64ToBytes(_regionsData[anchor]);
+
+        _gunzip(bytes).then(function (decompressed) {
+            var jsonStr = new TextDecoder().decode(decompressed);
+            var data = JSON.parse(jsonStr);
+
+            // Populate the global data structures; regions without module
+            // results still need an entry, which the viewer expects
+            _regions[anchor] = data.region;
+            _results[anchor] = data.results || {};
+            if (data.html) {
+                regionHTML[anchor] = data.html;
+            }
+
+            // Free the base64 string to reduce memory
+            delete _regionsData[anchor];
+
+            _patchRecordData(anchor);
+            _injectHTML(anchor);
+            _state[anchor] = "loaded";
+            _fireCallbacks(anchor);
+        }).catch(function (err) {
+            console.warn("Failed to decompress data for region: " + anchor, err);
+            _state[anchor] = "pending";
+        });
+    }
+
+    /** Bind the viewer's handlers for one region's freshly injected HTML.
+     */
+    function _bindRegion(anchor) {
+        var container = document.getElementById(anchor);
+        var real$ = window.$;
+        var scoped$ = function (selector, context) {
+            if (typeof selector === "string" && context === undefined && selector.charAt(0) !== "<") {
+                // search only the region's subtree: a page-wide query is slow on large
+                // pages. Native querySelectorAll (unlike jQuery's find) also matches
+                // selectors like "#<anchor> * .x" that start at the container itself.
+                try {
+                    var nodes = Array.prototype.slice.call(container.querySelectorAll(selector));
+                    if (container.matches(selector)) {
+                        nodes.unshift(container);
+                    }
+                    return real$(nodes);
+                } catch (e) {
+                    // not plain CSS (jQuery-only syntax): filter a page-wide query
+                    return real$(selector).filter(function () {
+                        return this === container || container.contains(this);
+                    });
+                }
+            }
+            return real$(selector, context);
+        };
+        real$.extend(scoped$, real$);
+        var regionOnly = Object.create(_regions);
+        regionOnly.order = [anchor];
+        window.$ = scoped$;
+        try {
+            viewer["start"](regionOnly, _results, []);
+        } finally {
+            window.$ = real$;
+            // restore the full region set (next/prev navigation uses its order)
+            viewer["setData"](_regions, _results);
+        }
+        _bound[anchor] = true;
     }
 
     /** Draw the SVG for a single region using the viewer (debounced) */
@@ -212,9 +314,34 @@ var lazyRegionLoader = (function () {
         }
         _lastDrawnAnchor = anchor;
         _lastDrawnTime = now;
-        if (typeof viewer !== "undefined" && viewer["start"]) {
-            viewer["start"](_regions, _results, _records);
+        if (typeof viewer === "undefined" || !viewer["start"]) {
+            return;
         }
+        if (!_bound[anchor] && document.getElementById(anchor)) {
+            _bindRegion(anchor);
+        } else {
+            viewer["switchToRegion"]();
+        }
+    }
+
+    /** Step to the previous/next region in _regions.order, as the viewer's arrows do:
+     *  from the overview to the first/last region, and past either end to the overview */
+    function _step(direction) {
+        var order = _regions.order;
+        var current = window.location.hash.replace(/^#/, "");
+        var target;
+        if (!current || current === "overview") {
+            target = direction > 0 ? order[0] : order[order.length - 1];
+        } else {
+            target = order[order.indexOf(current) + direction];
+        }
+        if (target === undefined) {
+            // the lazy loader ignores an empty hash, so show the overview directly
+            window.location.hash = "";
+            viewer["switchToRegion"]();
+            return;
+        }
+        window.location.hash = target;
     }
 
     /** Navigate to (show) a specific region, loading it first if needed */
@@ -261,16 +388,18 @@ var lazyRegionLoader = (function () {
             }
         });
 
-        // Hook into prev/next navigation arrows
-        $("#prev-region, #next-region").on("click", function () {
-            // Let antismash.js update the hash first, then check
-            setTimeout(function () {
-                var h = window.location.hash.replace(/^#/, "");
-                if (h && _state[h] !== undefined) {
-                    loadAndShow(h);
-                }
-            }, 50);
+        // Prev/next arrows
+        $("#prev-region, #next-region").on("click", function (event) {
+            event.stopImmediatePropagation();
+            _step(this.id === "next-region" ? 1 : -1);
         });
+        window.addEventListener("keyup", function (event) {
+            var key = event.keyCode;
+            var direction = (key === 37 || key === 87) ? -1 : ((key === 39 || key === 69) ? 1 : 0);
+            if (!direction) return;
+            event.stopPropagation();
+            _step(direction);
+        }, true);
 
         // Hook into overview table row clicks
         $(document).on("click", ".linked-row", function () {
@@ -281,9 +410,10 @@ var lazyRegionLoader = (function () {
             }
         });
 
-        // Call viewer start with the lightweight data for the overview
+        // Bind the page-level viewer handlers. No records are passed, as the
+        // overview minimaps are drawn for the visible overview page only.
         if (typeof viewer !== "undefined" && viewer["start"]) {
-            viewer["start"](_regions, _results, _records);
+            viewer["start"](_regions, _results, []);
         }
     }
 
