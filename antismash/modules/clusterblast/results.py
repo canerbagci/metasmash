@@ -6,14 +6,12 @@
 
 from collections import OrderedDict
 import logging
-import os
-from typing import Any, Dict, IO, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from antismash.common.module_results import ModuleResults
 from antismash.common.layers import AbstractRelatedArea
-from antismash.common.path import changed_directory
 from antismash.common.secmet import Record, Region
-from antismash.config import ConfigType, get_config
+from antismash.config import get_config
 
 from .data_structures import (
     MibigEntry,
@@ -229,13 +227,6 @@ class GeneralResults(ModuleResults):
                 protein_name = f"{cluster.accession}_{protein_name}"
                 self.proteins_of_interest[protein_name] = reference_proteins[protein_name]
 
-    def write_to_file(self, record: Record, options: ConfigType) -> None:
-        """ Write the results to a text file """
-        for cluster in self.region_results:
-            write_clusterblast_output(options, record, cluster,
-                                      self.proteins_of_interest,
-                                      searchtype=self.search_type)
-
     def to_json(self) -> Dict[str, Any]:
         if not self.region_results:
             return {}
@@ -320,6 +311,7 @@ class ClusterBlastResults(ModuleResults):
         for result in [self.general, self.subcluster, self.knowncluster]:
             if result is not None:
                 result.add_to_record(record)
+<<<<<<< HEAD
 
     def write_outputs(self, record: Record, options: ConfigType) -> None:
         for subresult in [self.general, self.knowncluster, self.subcluster]:
@@ -412,3 +404,5 @@ def _get_output_dir(options: ConfigType, searchtype: str) -> str:
     if not os.path.isdir(output_dir):
         raise RuntimeError(f"{output_dir} exists as a file, but must be a directory")
     return output_dir
+=======
+>>>>>>> upstream/master
