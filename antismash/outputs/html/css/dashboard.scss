@@ -65,7 +65,6 @@
     flex: 1 1 150px;
     background: linear-gradient(to bottom, #fafafa, #f0f0f0);
     border: 1px solid #ddd;
-    border-left: 4px solid $antismash-main;
     border-radius: 4px;
     padding: 0.8em 1em;
     text-align: center;
@@ -762,4 +761,55 @@ th.sort-desc::after {
     padding: 0.5em 1em;
     margin: 0 1em 0.5em;
     font-size: 85%;
+}
+
+// Genome Bins page
+.bins-table-controls {
+    display: flex;
+    align-items: center;
+    gap: 1em;
+}
+
+.bins-show-empty-label {
+    font-size: 85%;
+    color: #555;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.bgc-pill {
+    display: inline-block;
+    font-size: 90%;
+    padding: 0.05em 0.5em;
+    margin-right: 0.3em;
+    background: lighten($antismash-main, 45%);
+    color: darken($antismash-main, 15%);
+    border: 1px solid lighten($antismash-main, 30%);
+    border-radius: 10px;
+}
+
+.bgc-category-pill {
+    border-color: rgba(0, 0, 0, 0.15);
+    white-space: nowrap;
+}
+
+// Bin names are long and space-free (e.g. "output/all_combined_magscot_cleanbin_000067"),
+// so let them break anywhere instead of truncating the part that tells bins apart
+table.dashboard-table td.bins-name-cell {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+table.dashboard-table td.bins-categories-cell {
+    white-space: normal;
+    overflow: visible;
+}
+
+table.dashboard-table tbody tr.bins-unbinned-row {
+    border-top: 2px solid #ddd;
+
+    td {
+        font-style: italic;
+        color: #666;
+    }
 }

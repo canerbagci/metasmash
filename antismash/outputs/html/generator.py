@@ -25,6 +25,7 @@ from antismash.common.secmet import Record
 from antismash.config import ConfigType
 from antismash.modules import tfbs_finder as tfbs, tta
 from antismash.outputs.html import js
+from antismash.outputs.html.bins import build_bins_page_data
 from antismash.custom_typing import AntismashModule, VisualisationModule
 
 from .visualisers import gene_table
@@ -240,6 +241,24 @@ def _write_region_page(options_layer: OptionsLayer, page_title: str, as_js_url: 
     template = FileTemplate(os.path.join(TEMPLATE_PATH, "region_page.html"))
     content = template.render(options=options_layer, page_title=page_title, as_js_url=as_js_url)
     with open(os.path.join(output_dir, "region.html"), "w", encoding="utf-8") as handle:
+        handle.write(_strip_leading_whitespace(content))
+
+
+def _script_json(data: Any) -> Any:
+    """ Serialises data as JSON that is safe to embed inside an inline <script> block,
+        escaping "<" so that user-supplied strings (e.g. bin names) can't close the tag.
+    """
+    from markupsafe import Markup
+    return Markup(json.dumps(data).replace("<", "\\u003c"))
+
+
+def _write_bins_page(options_layer: OptionsLayer, page_title: str, bins_data: Dict[str, Any],
+                     output_dir: str) -> None:
+    """ Writes bins.html, the Genome Bins summary page. """
+    template = FileTemplate(os.path.join(TEMPLATE_PATH, "bins.html"))
+    content = template.render(options=options_layer, page_title=page_title, data=bins_data,
+                              bins_json=_script_json(bins_data))
+    with open(os.path.join(output_dir, "bins.html"), "w", encoding="utf-8") as handle:
         handle.write(_strip_leading_whitespace(content))
 
 
@@ -588,9 +607,13 @@ def generate_streaming_dashboard(record_summaries: List[StreamingRecordSummary],
                                  options_layer: OptionsLayer, page_title: str,
                                  taxonomy_mapping: Optional[Dict[str, str]] = None,
                                  skipped_record_count: int = 0,
-                                 ) -> str:
-    """Generates the dashboard HTML page from lightweight streaming summaries."""
-    from markupsafe import Markup
+                                 bins_mapping: Optional[Dict[str, str]] = None,
+                                 ) -> Tuple[str, Dict[str, Any]]:
+    """Generates the dashboard HTML page from lightweight streaming summaries.
+
+        Returns:
+            a tuple of the page content and the dashboard data it was built from
+    """
     from antismash.outputs.html.dashboard import build_dashboard_data_from_summaries
 
     template = FileTemplate(os.path.join(TEMPLATE_PATH, "dashboard.html"))
@@ -598,6 +621,7 @@ def generate_streaming_dashboard(record_summaries: List[StreamingRecordSummary],
         record_summaries,
         taxonomy_mapping=taxonomy_mapping or {},
         skipped_record_count=skipped_record_count,
+        bins_mapping=bins_mapping,
     )
     has_taxonomy = bool(taxonomy_mapping)
 
@@ -605,10 +629,11 @@ def generate_streaming_dashboard(record_summaries: List[StreamingRecordSummary],
         options=options_layer,
         page_title=page_title,
         data=data,
-        dashboard_json=Markup(json.dumps(data)),
+        dashboard_json=_script_json(data),
         has_taxonomy=has_taxonomy,
+        has_bins=data["has_bins"],
     )
-    return content
+    return content, data
 
 
 def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
@@ -616,6 +641,7 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
                                    options: ConfigType, all_modules: List[AntismashModule],
                                    taxonomy_mapping: Optional[Dict[str, str]] = None,
                                    skipped_record_count: int = 0,
+                                   bins_mapping: Optional[Dict[str, str]] = None,
                                    ) -> None:
     """Streaming finalization that uses lightweight record summaries only."""
     import logging  # local import: timing instrumentation for the finalize tail
@@ -668,14 +694,19 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
     _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
     _t_overview = _time.monotonic()
 
-    dashboard_content = generate_streaming_dashboard(
+    dashboard_content, dashboard_data = generate_streaming_dashboard(
         sorted_records, options_layer, page_title,
         taxonomy_mapping=taxonomy_mapping,
         skipped_record_count=skipped_record_count,
+        bins_mapping=bins_mapping,
     )
     dashboard_content = _strip_leading_whitespace(dashboard_content)
     with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write(dashboard_content)
+    if bins_mapping is not None:
+        _write_bins_page(options_layer, page_title,
+                         build_bins_page_data(dashboard_data["bgc_table"], bins_mapping),
+                         options.output_dir)
     _t_dashboard = _time.monotonic()
 
     logging.info(
@@ -693,6 +724,7 @@ def finalize_html_output(lightweight_records: List[Dict[str, Any]],
                           options: ConfigType, all_modules: List[AntismashModule],
                           taxonomy_mapping: Optional[Dict[str, str]] = None,
                           skipped_record_count: int = 0,
+                          bins_mapping: Optional[Dict[str, str]] = None,
                           ) -> None:
     """ Streaming finalization: write the regions.js index, regions.html overview,
         and index.html dashboard after all records have been processed.
@@ -745,14 +777,19 @@ def finalize_html_output(lightweight_records: List[Dict[str, Any]],
     _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
 
     # Generate the dashboard
-    dashboard_content = generate_dashboard(
+    dashboard_content, dashboard_data = generate_dashboard(
         record_layers_with_regions, record_layers_without_regions,
         options_layer, page_title, taxonomy_mapping=taxonomy_mapping,
         skipped_record_count=skipped_record_count,
+        bins_mapping=bins_mapping,
     )
     dashboard_content = _strip_leading_whitespace(dashboard_content)
     with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write(dashboard_content)
+    if bins_mapping is not None:
+        _write_bins_page(options_layer, page_title,
+                         build_bins_page_data(dashboard_data["bgc_table"], bins_mapping),
+                         options.output_dir)
 
 
 def generate_webpage(records: List[Record], results: List[Dict[str, ModuleResults]],
@@ -809,29 +846,35 @@ def generate_dashboard(record_layers_with_regions: List[RecordLayer],
                        record_layers_without_regions: List[RecordLayer],
                        options_layer: OptionsLayer, page_title: str,
                        taxonomy_mapping: Optional[Dict[str, str]] = None,
-                       skipped_record_count: int = 0) -> str:
+                       skipped_record_count: int = 0,
+                       bins_mapping: Optional[Dict[str, str]] = None,
+                       ) -> Tuple[str, Dict[str, Any]]:
     """ Generates the dashboard HTML page.
 
         Must be called AFTER generate_webpage / generate_html_sections,
         because those populate most_related_area on each RegionLayer.
+
+        Returns:
+            a tuple of the page content and the dashboard data it was built from
     """
-    from markupsafe import Markup
     from antismash.outputs.html.dashboard import build_dashboard_data
 
     template = FileTemplate(os.path.join(TEMPLATE_PATH, "dashboard.html"))
     data = build_dashboard_data(record_layers_with_regions, record_layers_without_regions,
                                 taxonomy_mapping=taxonomy_mapping or {},
-                                skipped_record_count=skipped_record_count)
+                                skipped_record_count=skipped_record_count,
+                                bins_mapping=bins_mapping)
     has_taxonomy = bool(taxonomy_mapping)
 
     content = template.render(
         options=options_layer,
         page_title=page_title,
         data=data,
-        dashboard_json=Markup(json.dumps(data)),
+        dashboard_json=_script_json(data),
         has_taxonomy=has_taxonomy,
+        has_bins=data["has_bins"],
     )
-    return content
+    return content, data
 
 
 def find_plugins_for_cluster(plugins: List[AntismashModule],

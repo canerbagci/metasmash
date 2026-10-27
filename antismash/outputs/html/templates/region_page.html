@@ -13,6 +13,10 @@
 
   <div class="dashboard-nav">
     <a class="dashboard-nav-item" href="index.html">Dashboard</a>
+    {% if options.html_bins %}
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" href="bins.html">Genome Bins</a>
+    {% endif %}
     <span class="dashboard-nav-separator">|</span>
     <a class="dashboard-nav-item" id="region-page-detailed-link" href="regions.html">Detailed Results</a>
   </div>

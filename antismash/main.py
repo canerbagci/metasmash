@@ -531,8 +531,10 @@ def write_outputs(results: serialiser.AntismashResults, options: ConfigType) -> 
     if html.is_enabled(options):
         logging.debug("Creating results page")
         start = time.time()
+        all_record_ids = [record.id for record in results.records]
+        all_record_ids.extend(record.original_id for record in results.records if record.original_id)
         html.write(filtered_records, filtered_module_results, options, get_all_modules(),
-                   skipped_record_count=skipped_count)
+                   skipped_record_count=skipped_count, all_record_ids=all_record_ids)
         # use an average of times for html
         duration = (time.time() - start) / max(len(results.records), 1)
         for val in results.timings_by_record.values():
@@ -1624,6 +1626,7 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         finalize_streaming_html_output,
         StreamingRegionDataWriter,
     )
+    from antismash.outputs.html.bins import load_bins_mapping
     from antismash.outputs.html.taxonomy import parse_taxonomy_file
 
     start_time = datetime.now()
@@ -1984,11 +1987,16 @@ def _run_antismash_streaming(sequence_file: str, options: ConfigType,
         taxonomy_mapping: Dict[str, str] = {}
         if options.html_taxonomy:
             taxonomy_mapping = parse_taxonomy_file(options.html_taxonomy)
+        known_ids = list(accepted_ids)
+        known_ids.extend(resolved_id for resolved_id, _ in accepted_ids.values())
+        # accepted_ids is keyed by the original IDs with invalid characters stripped
+        bins_mapping = load_bins_mapping(options.html_bins, known_ids,
+                                         normalise=record_processing._strip_id)  # pylint: disable=protected-access
 
         finalize_streaming_html_output(
             lightweight_records, record_summaries,
             options, all_modules, taxonomy_mapping=taxonomy_mapping,
-            skipped_record_count=skipped_count,
+            skipped_record_count=skipped_count, bins_mapping=bins_mapping,
         )
         html_finalize_extra: Dict[str, Union[int, str]] = {
             "regions_count": regions_count,

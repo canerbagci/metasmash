@@ -1,0 +1,71 @@
+{% import 'dashboard_macros.html' as dashboard %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{page_title}} - Genome Bins - antiSMASH results</title>
+  <style>img {width: 20px; height: 20px;}</style>
+  <link rel="stylesheet" type="text/css" href="css/{{options.taxon}}.css">
+  <meta property="og:title" content="{{page_title}} - Genome Bins" />
+  <meta property="og:description" content="{{options.html_description}}">
+</head>
+<body>
+  <div id="header">
+    {% include 'header.html' %}
+  </div>
+
+  <div class="dashboard-nav">
+    <a class="dashboard-nav-item" href="index.html">Dashboard</a>
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item dashboard-nav-active" href="bins.html">Genome Bins</a>
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" href="regions.html">Detailed Results</a>
+  </div>
+
+  <div class="dashboard-container">
+    <div class="dashboard-title">{{page_title}} — Genome Bins</div>
+
+    <!-- Summary cards -->
+    <div class="summary-cards">
+      {{ dashboard.stat_card("Bins imported", data.summary.bins_imported) }}
+      {{ dashboard.stat_card("Bins with BGCs", data.summary.bins_with_bgcs) }}
+      {{ dashboard.stat_card("BGCs in bins", data.summary.bgcs_in_bins) }}
+      {{ dashboard.stat_card("BGCs on unbinned contigs", data.summary.bgcs_unbinned) }}
+    </div>
+
+    <!-- Bin table -->
+    <div class="bgc-table-section">
+      <div class="bgc-table-header">
+        <span class="bgc-table-title" id="bins-table-title">Genome Bins</span>
+        <div class="bins-table-controls">
+          <label class="bins-show-empty-label"><input type="checkbox" id="bins-show-empty" /> Show bins without BGCs</label>
+          <input type="text" id="bins-filter" class="bgc-filter-input" placeholder="Filter bins...">
+        </div>
+      </div>
+      <table id="bins-table" class="dashboard-table">
+        <thead>
+          <tr>
+            <th data-sort-key="bin" style="width: 18%;">Bin</th>
+            <th data-sort-key="contigs" style="width: 8%;">Contigs</th>
+            <th data-sort-key="bgcs" style="width: 7%;">BGCs</th>
+            <th data-sort-key="complete" style="width: 8%;">Complete</th>
+            <th data-sort-key="on_edge" style="width: 8%;">On edge</th>
+            <th data-sort-key="known_hits" style="width: 9%;">Known hits</th>
+            <th data-no-sort="true">Categories</th>
+            <th data-no-sort="true" style="width: 9em;"></th>
+          </tr>
+        </thead>
+        <tbody id="bins-table-body">
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% include 'footer.html' %}
+  <script src="js/jquery.js"></script>
+  <script>
+    var binsData = {{ bins_json }};
+  </script>
+  <script src="js/bins.js"></script>
+</body>
+</html>

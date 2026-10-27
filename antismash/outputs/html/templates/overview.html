@@ -56,6 +56,10 @@
 
   <div class="dashboard-nav">
     <a class="dashboard-nav-item" href="index.html">Dashboard</a>
+    {% if options.html_bins %}
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" href="bins.html">Genome Bins</a>
+    {% endif %}
     <span class="dashboard-nav-separator">|</span>
     <a class="dashboard-nav-item dashboard-nav-active" href="regions.html">Detailed Results</a>
   </div>
@@ -631,12 +635,19 @@
             });
         }
 
-        // Show filter banner
-        var bannerHtml = '<div id="bgc-filter-banner" class="bgc-filter-banner">'
-            + 'Showing ' + selected.length + ' of ' + totalRegions + ' regions (filtered from dashboard). '
-            + '<a href="#" id="bgc-show-all-regions">Show all regions</a>'
-            + '</div>';
-        $("#buttons").before(bannerHtml);
+        // Show filter banner; a selection made on the Genome Bins page names its bin
+        var selectionLabel = sessionStorage.getItem("metasmash_bgc_selection_label");
+        var $banner = $('<div id="bgc-filter-banner" class="bgc-filter-banner"></div>');
+        if (selectionLabel) {
+            $banner.append(document.createTextNode('Showing ' + selected.length + ' regions from '));
+            $banner.append($('<b></b>').text(selectionLabel));
+            $banner.append(document.createTextNode('. '));
+        } else {
+            $banner.append(document.createTextNode('Showing ' + selected.length + ' of ' + totalRegions
+                                                   + ' regions (filtered from dashboard). '));
+        }
+        $banner.append('<a href="#" id="bgc-show-all-regions">Show all regions</a>');
+        $("#buttons").before($banner);
 
         // Append pagination controls if active
         if (bgcPaginator.isActive()) {
@@ -722,6 +733,7 @@
             // Remove banner and clear sessionStorage
             $("#bgc-filter-banner").remove();
             sessionStorage.removeItem("antismash_bgc_selection");
+            sessionStorage.removeItem("metasmash_bgc_selection_label");
         });
 
         return selected;

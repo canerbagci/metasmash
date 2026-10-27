@@ -20,7 +20,7 @@ from antismash.common.secmet.test.helpers import DummyCDS, DummyProtocluster, Du
 from antismash.common.test.helpers import DummyRecord
 from antismash.config import build_config, destroy_config, update_config
 from antismash.outputs.html import generator
-from antismash.outputs.html.dashboard import build_dashboard_data_from_summaries
+from antismash.outputs.html.dashboard import build_dashboard_data, build_dashboard_data_from_summaries
 from antismash.outputs.html.generator import (
     generate_webpage,
     build_antismash_js_url,
@@ -74,6 +74,25 @@ class TestOutput(unittest.TestCase):
             assert "js/region_page.js" in page
             assert "regions_data/index.js" in page
             assert "regions.js" not in page
+
+    def test_build_dashboard_data_classic_with_bins(self):
+        record = DummyRecord(seq="A" * 200)
+        record.record_index = 1
+        record.add_cds_feature(DummyCDS(start=20, end=80, locus_tag="cds1", translation="A" * 20))
+        record.add_protocluster(
+            DummyProtocluster(core_start=30, core_end=50,
+                              product="test-product", product_category="TEST-CATEGORY")
+        )
+        record.create_candidate_clusters()
+        record.create_regions()
+
+        with TemporaryDirectory() as temp_dir:
+            update_config({"output_dir": temp_dir})
+            _, with_regions, without_regions, _, _ = generate_webpage([record], [{}], self.options,
+                                                                      get_all_modules())
+        data = build_dashboard_data(with_regions, without_regions, bins_mapping={record.id: "bin.1"})
+        assert data["bgc_table"][0]["bin"] == "bin.1"
+        assert data["has_bins"] is True
 
 
 class TestJavascriptPresence(unittest.TestCase):
@@ -241,6 +260,28 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert data["bgc_table"][0]["most_similar_known"] == "Known cluster"
         assert data["bgc_table"][0]["taxonomy"] == "Root; Test"
 
+    def test_build_dashboard_data_from_summaries_with_bins(self):
+        data = build_dashboard_data_from_summaries([_bins_summary()], bins_mapping={"record-1": "bin.7"})
+        assert data["bgc_table"][0]["bin"] == "bin.7"
+        assert data["has_bins"] is True
+        assert data["filter_metadata"]["bins_list"] == ["bin.7"]
+
+    def test_summaries_match_original_id(self):
+        summary = _bins_summary(record_id="record-1_2", original_id="record-1")
+        data = build_dashboard_data_from_summaries([summary], bins_mapping={"record-1": "bin.7"})
+        assert data["bgc_table"][0]["bin"] == "bin.7"
+
+    def test_summaries_unbinned_row(self):
+        data = build_dashboard_data_from_summaries([_bins_summary()], bins_mapping={"other": "bin.1"})
+        assert data["bgc_table"][0]["bin"] == ""
+        assert data["filter_metadata"]["bins_list"] == []
+
+    def test_dashboard_data_without_bins_unchanged(self):
+        data = build_dashboard_data_from_summaries([_bins_summary()])
+        assert "bin" not in data["bgc_table"][0]
+        assert data["has_bins"] is False
+        assert "bins_list" not in data["filter_metadata"]
+
     def test_finalize_streaming_html_output_defers_hidden_overview(self):
         # 51 records: two overview pages of 50, plus the compact (multi-record) table
         summaries, lightweight_records = [], []
@@ -274,6 +315,68 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert all(f'data-anchor="#r{i}c1"' in blocks[1] for i in range(1, 52))
         first_page = content.split('data-page="0"', 1)[1].split('data-page="1"', 1)[0]
         assert 'data-anchor="#r1c1"' in first_page and deferred_start not in first_page
+
+    def _finalize_with_bins(self, temp_dir, bins_mapping):
+        lightweight = [{"seq_id": "record-1", "regions": [{
+            "anchor": "r1c1", "start": 5, "end": 45, "idx": 1, "type": "test-product",
+            "products": ["test-product"], "product_categories": ["TEST-CATEGORY"],
+            "cssClass": "TEST-CATEGORY test-product"}]}]
+        update_config({"output_dir": temp_dir, "html_bins": "bins.tsv" if bins_mapping is not None else ""})
+        finalize_streaming_html_output(lightweight, [_bins_summary()], self.options, get_all_modules(),
+                                       bins_mapping=bins_mapping)
+        pages = {}
+        for name in ["index.html", "regions.html", "region.html", "bins.html"]:
+            page_path = os.path.join(temp_dir, name)
+            if os.path.exists(page_path):
+                with open(page_path, encoding="utf-8") as handle:
+                    pages[name] = handle.read()
+        return pages
+
+    def test_bins_page_written(self):
+        with TemporaryDirectory() as temp_dir:
+            pages = self._finalize_with_bins(temp_dir, {"record-1": "bin.7"})
+        assert "var binsData =" in pages["bins.html"]
+        assert '"bin.7"' in pages["bins.html"]
+        assert "js/bins.js" in pages["bins.html"]
+        for name in ["index.html", "regions.html", "region.html"]:
+            assert 'href="bins.html"' in pages[name], name
+
+    def test_bins_page_written_for_empty_mapping(self):
+        with TemporaryDirectory() as temp_dir:
+            pages = self._finalize_with_bins(temp_dir, {})
+        assert '"bins_imported":0' in pages["bins.html"]
+
+    def test_bin_names_cannot_close_inline_scripts(self):
+        name = "</script><script>alert(1)</script>"
+        with TemporaryDirectory() as temp_dir:
+            pages = self._finalize_with_bins(temp_dir, {"record-1": name})
+        for page in ["bins.html", "index.html"]:
+            assert name not in pages[page], page
+            assert "\\u003c/script>" in pages[page], page
+
+    def test_no_bins_page_without_option(self):
+        with TemporaryDirectory() as temp_dir:
+            pages = self._finalize_with_bins(temp_dir, None)
+        assert "bins.html" not in pages
+        for name in ["index.html", "regions.html", "region.html"]:
+            assert "bins.html" not in pages[name], name
+
+    def test_regions_banner_uses_and_clears_bin_label(self):
+        with TemporaryDirectory() as temp_dir:
+            pages = self._finalize_with_bins(temp_dir, {"record-1": "bin.7"})
+        regions = pages["regions.html"]
+        assert 'sessionStorage.getItem("metasmash_bgc_selection_label")' in regions
+        assert 'sessionStorage.removeItem("metasmash_bgc_selection_label")' in regions
+
+    def test_dashboard_bin_column(self):
+        options_layer = OptionsLayer(self.options, get_all_modules())
+        content, _ = generator.generate_streaming_dashboard(
+            [_bins_summary()], options_layer, "title", bins_mapping={"record-1": "bin.7"})
+        assert 'data-sort-key="bin"' in content
+        assert 'id="adv-ms-bin"' in content
+        content, _ = generator.generate_streaming_dashboard([_bins_summary()], options_layer, "title")
+        assert 'data-sort-key="bin"' not in content
+        assert 'id="adv-ms-bin"' not in content
 
     def test_finalize_streaming_html_output_sorts_record_summaries(self):
         record_b = StreamingRecordSummary(
@@ -349,6 +452,18 @@ class TestStreamingHtmlSummaries(unittest.TestCase):
         assert order == ["r1c1", "r2c1"]
         records = json.loads(regions_js.split("var recordData = ", 1)[1].split(";\n", 1)[0])
         assert [record["seq_id"] for record in records] == ["record-a", "record-b"]
+
+
+def _bins_summary(record_id="record-1", original_id=""):
+    return StreamingRecordSummary(
+        id=record_id, record_index=1, original_id=original_id, source="", combined_source_count=1,
+        regions=[StreamingRegionSummary(
+            anchor_id="r1c1", region_number=1, start=5, end=45, length=40,
+            products=["test-product"], product_categories=["TEST-CATEGORY"],
+            css_class="TEST-CATEGORY test-product", contig_edge=False, gene_count=2,
+            product_to_category={"test-product": "TEST-CATEGORY"},
+        )],
+    )
 
 
 class TestRegionDataBundles(unittest.TestCase):

@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from antismash.common.layers import RecordLayer, RegionLayer
+from antismash.outputs.html.bins import get_bin
 from antismash.outputs.html.streaming_summary import StreamingRecordSummary, StreamingRegionSummary
 
 
@@ -93,6 +94,7 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
                          records_without_regions: List[RecordLayer],
                          taxonomy_mapping: Optional[Dict[str, str]] = None,
                          skipped_record_count: int = 0,
+                         bins_mapping: Optional[Dict[str, str]] = None,
                          ) -> Dict[str, Any]:
     """Build the data dict for the dashboard page.
 
@@ -103,6 +105,8 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
         records_with_regions: RecordLayer objects that have at least one region
         records_without_regions: RecordLayer objects with no regions
         taxonomy_mapping: optional mapping of contig_id to taxonomy lineage
+        bins_mapping: optional mapping of contig_id to genome bin name,
+                      None if no bins file was given
 
     Returns:
         A JSON-serializable dict with summary, type/category counts, and table rows
@@ -110,6 +114,7 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
     if taxonomy_mapping is None:
         taxonomy_mapping = {}
     has_taxonomy = bool(taxonomy_mapping)
+    has_bins = bins_mapping is not None
     total_records = len(records_with_regions) + len(records_without_regions) + skipped_record_count
     records_with_bgcs = len(records_with_regions)
     total_bgcs = 0
@@ -158,6 +163,8 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
             }
             if has_taxonomy:
                 row["taxonomy"] = taxonomy_mapping.get(record.seq_record.id, "-")
+            if bins_mapping is not None:
+                row["bin"] = get_bin(bins_mapping, record.seq_record.id, record.seq_record.original_id)
             bgc_table.append(row)
 
     # Convert defaultdicts to regular dicts for JSON serialization
@@ -169,6 +176,8 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
         "products_list": sorted(bgc_type_counts.keys()),
         "categories_list": sorted(bgc_category_counts.keys()),
     }
+    if has_bins:
+        filter_metadata["bins_list"] = sorted({row["bin"] for row in bgc_table if row["bin"]})
     if bgc_table:
         sim_values = [r["similarity_percentage"] for r in bgc_table
                       if r["similarity_percentage"] >= 0]
@@ -191,6 +200,7 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
         "type_to_category": type_to_category,
         "bgc_table": bgc_table,
         "has_taxonomy": has_taxonomy,
+        "has_bins": has_bins,
         "filter_metadata": filter_metadata,
     }
 
@@ -198,11 +208,13 @@ def build_dashboard_data(records_with_regions: List[RecordLayer],
 def build_dashboard_data_from_summaries(records_with_regions: List[StreamingRecordSummary],
                                         taxonomy_mapping: Optional[Dict[str, str]] = None,
                                         skipped_record_count: int = 0,
+                                        bins_mapping: Optional[Dict[str, str]] = None,
                                         ) -> Dict[str, Any]:
     """Build dashboard data from lightweight streaming summaries."""
     if taxonomy_mapping is None:
         taxonomy_mapping = {}
     has_taxonomy = bool(taxonomy_mapping)
+    has_bins = bins_mapping is not None
     total_records = len(records_with_regions) + skipped_record_count
     records_with_bgcs = len(records_with_regions)
     total_bgcs = 0
@@ -247,6 +259,8 @@ def build_dashboard_data_from_summaries(records_with_regions: List[StreamingReco
             }
             if has_taxonomy:
                 row["taxonomy"] = taxonomy_mapping.get(record.id, "-")
+            if bins_mapping is not None:
+                row["bin"] = get_bin(bins_mapping, record.id, record.original_id)
             bgc_table.append(row)
 
     type_counts = {k: dict(v) for k, v in sorted(bgc_type_counts.items())}
@@ -256,6 +270,8 @@ def build_dashboard_data_from_summaries(records_with_regions: List[StreamingReco
         "products_list": sorted(bgc_type_counts.keys()),
         "categories_list": sorted(bgc_category_counts.keys()),
     }
+    if has_bins:
+        filter_metadata["bins_list"] = sorted({row["bin"] for row in bgc_table if row["bin"]})
     if bgc_table:
         sim_values = [r["similarity_percentage"] for r in bgc_table
                       if r["similarity_percentage"] >= 0]
@@ -278,5 +294,6 @@ def build_dashboard_data_from_summaries(records_with_regions: List[StreamingReco
         "type_to_category": type_to_category,
         "bgc_table": bgc_table,
         "has_taxonomy": has_taxonomy,
+        "has_bins": has_bins,
         "filter_metadata": filter_metadata,
     }

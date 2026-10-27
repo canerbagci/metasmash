@@ -259,6 +259,7 @@ class TestWindowedStreamingPipeline(unittest.TestCase):
             "region_gbks": False,
             "zip_output": False,
             "html_taxonomy": "",
+            "html_bins": "",
             "html_title": "",
             "output_basename": "streaming-test",
             "html_description": "",

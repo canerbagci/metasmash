@@ -16,6 +16,10 @@
 
   <div class="dashboard-nav">
     <a class="dashboard-nav-item dashboard-nav-active" href="index.html">Dashboard</a>
+    {% if options.html_bins %}
+    <span class="dashboard-nav-separator">|</span>
+    <a class="dashboard-nav-item" href="bins.html">Genome Bins</a>
+    {% endif %}
     <span class="dashboard-nav-separator">|</span>
     <a class="dashboard-nav-item" href="regions.html">Detailed Results</a>
   </div>
@@ -95,6 +99,18 @@
               </div>
             </div>
           </div>
+          {% if has_bins %}
+          <div class="adv-multiselect" id="adv-ms-bin">
+            <span class="adv-row-label">Bin</span>
+            <div class="adv-ms-control">
+              <div class="adv-ms-display" tabindex="0">All bins</div>
+              <div class="adv-ms-dropdown" style="display:none;">
+                <input type="text" class="adv-ms-search" placeholder="Search bins..." />
+                <div class="adv-ms-options"></div>
+              </div>
+            </div>
+          </div>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -112,6 +128,7 @@
               <input type="checkbox" id="bgc-select-all" title="Select all visible rows" />
             </th>
             <th data-sort-key="record_id" style="width: 10%;">Record</th>
+            {% if has_bins %}<th data-sort-key="bin" style="width: 8%;">Bin</th>{% endif %}
             {% if has_taxonomy %}<th data-sort-key="taxonomy" style="width: 15%;">Taxonomy</th>{% endif %}
             <th data-sort-key="region_label" style="width: 7%;">Region</th>
             <th data-sort-key="products" style="width: 10%;">Type</th>

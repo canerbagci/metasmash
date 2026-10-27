@@ -9,6 +9,7 @@ $(document).ready(function () {
     // The selection is a one-shot handoff to regions.html; returning to the
     // dashboard consumes it so the next region-link click shows all regions.
     sessionStorage.removeItem("antismash_bgc_selection");
+    sessionStorage.removeItem("metasmash_bgc_selection_label");
 
     var FILTER_STORAGE_KEY = "antismash_dashboard_filters";
 
@@ -23,6 +24,9 @@ $(document).ready(function () {
     var _sortAsc = true;
     var _selectedAnchors = {};  // anchor_id -> true
     var _hasTaxonomy = dashboardData.has_taxonomy || false;
+    var _hasBins = dashboardData.has_bins || false;
+    // matches UNBINNED_LABEL in bins.py; rows on unbinned contigs have an empty bin
+    var UNBINNED_LABEL = "Unbinned";
     var _meta = dashboardData.filter_metadata || {};
 
     // Pre-compute a sortable region label "record_index.region_number"
@@ -41,7 +45,8 @@ $(document).ready(function () {
         similarityMin: _meta.similarity_min || 0,
         similarityMax: _meta.similarity_max || 100,
         selectedTypes: [],       // empty = all
-        selectedCategories: []   // empty = all
+        selectedCategories: [],  // empty = all
+        selectedBins: []         // empty = all
     };
 
     // Store defaults so we can detect active filters
@@ -95,6 +100,12 @@ $(document).ready(function () {
                 return categoriesList.indexOf(c) > -1;
             });
         }
+        var binsList = _meta.bins_list || [];
+        if (_hasBins && Array.isArray(saved.selectedBins)) {
+            _filterState.selectedBins = saved.selectedBins.filter(function (b) {
+                return b === UNBINNED_LABEL || binsList.indexOf(b) > -1;
+            });
+        }
     })();
 
     // Sync static UI controls to restored state
@@ -123,6 +134,7 @@ $(document).ready(function () {
         var sMax = _filterState.similarityMax;
         var types = _filterState.selectedTypes;
         var cats = _filterState.selectedCategories;
+        var bins = _filterState.selectedBins;
         var simActive = sMin !== _defaults.similarityMin || sMax !== _defaults.similarityMax;
 
         _filteredRows = _allRows.filter(function (row) {
@@ -133,7 +145,8 @@ $(document).ready(function () {
                     || (row.product_categories && row.product_categories.toLowerCase().indexOf(text) > -1)
                     || (row.most_similar_known && row.most_similar_known.toLowerCase().indexOf(text) > -1)
                     || (row.region_label && row.region_label.indexOf(text) > -1)
-                    || (_hasTaxonomy && row.taxonomy && row.taxonomy.toLowerCase().indexOf(text) > -1);
+                    || (_hasTaxonomy && row.taxonomy && row.taxonomy.toLowerCase().indexOf(text) > -1)
+                    || (_hasBins && row.bin && row.bin.toLowerCase().indexOf(text) > -1);
                 if (!match) return false;
             }
 
@@ -174,6 +187,11 @@ $(document).ready(function () {
                 if (!catMatch) return false;
             }
 
+            // Bin multi-select
+            if (bins.length > 0 && bins.indexOf(row.bin || UNBINNED_LABEL) === -1) {
+                return false;
+            }
+
             return true;
         });
 
@@ -199,9 +217,9 @@ $(document).ready(function () {
 
     function _escapeHtml(s) {
         if (!s) return "";
-        var div = document.createElement("div");
-        div.appendChild(document.createTextNode(s));
-        return div.innerHTML;
+        // safe for both element content and quoted attribute values
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
 
     function renderPage() {
@@ -217,6 +235,9 @@ $(document).ready(function () {
             html.push('<tr class="' + cycle + '" data-anchor="' + bgc.anchor_id + '">');
             html.push('<td class="bgc-select-cell"><input type="checkbox" class="bgc-select-checkbox" data-anchor="' + bgc.anchor_id + '"' + checked + ' /></td>');
             html.push('<td>' + _escapeHtml(bgc.record_id) + '</td>');
+            if (_hasBins) {
+                html.push('<td title="' + _escapeHtml(bgc.bin) + '">' + (bgc.bin ? _escapeHtml(bgc.bin) : "-") + '</td>');
+            }
             if (_hasTaxonomy) {
                 html.push('<td class="taxonomy-cell" data-tooltip="' + _escapeHtml(bgc.taxonomy) + '">' + _escapeHtml(bgc.taxonomy) + '</td>');
             }
@@ -695,6 +716,9 @@ $(document).ready(function () {
 
     var resetTypeMS = initMultiSelect("#adv-ms-type", _meta.products_list || [], "selectedTypes", "All types");
     var resetCatMS = initMultiSelect("#adv-ms-category", _meta.categories_list || [], "selectedCategories", "All categories");
+    var resetBinMS = _hasBins
+        ? initMultiSelect("#adv-ms-bin", (_meta.bins_list || []).concat([UNBINNED_LABEL]), "selectedBins", "All bins")
+        : null;
 
     // =========================================================================
     //  Chips + Clear All
@@ -721,6 +745,9 @@ $(document).ready(function () {
         }
         if (_filterState.selectedCategories.length > 0) {
             chips.push({label: "Categories: " + _filterState.selectedCategories.join(", "), key: "categories"});
+        }
+        if (_filterState.selectedBins.length > 0) {
+            chips.push({label: "Bins: " + _filterState.selectedBins.join(", "), key: "bins"});
         }
         var html = "";
         for (var i = 0; i < chips.length; i++) {
@@ -764,6 +791,9 @@ $(document).ready(function () {
             case "categories":
                 if (resetCatMS) resetCatMS();
                 break;
+            case "bins":
+                if (resetBinMS) resetBinMS();
+                break;
         }
         applyAllFilters();
     }
@@ -786,6 +816,7 @@ $(document).ready(function () {
         _filterState.similarityMax = _defaults.similarityMax;
         if (resetTypeMS) resetTypeMS();
         if (resetCatMS) resetCatMS();
+        if (resetBinMS) resetBinMS();
 
         applyAllFilters();
     });
@@ -982,6 +1013,7 @@ $(document).ready(function () {
             return;
         }
         sessionStorage.setItem("antismash_bgc_selection", JSON.stringify(anchors));
+        sessionStorage.removeItem("metasmash_bgc_selection_label");
         window.location.href = "regions.html";
     });
 

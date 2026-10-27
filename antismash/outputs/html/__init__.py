@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import stat
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 import warnings
 
 import sass
@@ -24,8 +24,9 @@ from antismash.config import ConfigType
 from antismash.config.args import ModuleArgs, ReadableFullPathAction
 from antismash.outputs.html.generator import (
     generate_webpage, generate_dashboard, find_local_antismash_js_path,
-    _strip_leading_whitespace,
+    _strip_leading_whitespace, _write_bins_page,
 )
+from antismash.outputs.html.bins import build_bins_page_data, load_bins_mapping
 from antismash.outputs.html.taxonomy import parse_taxonomy_file
 
 NAME = "html"
@@ -64,6 +65,14 @@ def get_arguments() -> ModuleArgs:
                     metavar="PATH",
                     help=("Path to a two-column TSV file mapping contig IDs to "
                           "taxonomy lineages for the dashboard overview table."))
+    args.add_option("--html-bins",
+                    dest="html_bins",
+                    type=str,
+                    action=ReadableFullPathAction,
+                    default="",
+                    metavar="PATH",
+                    help=("Path to a two-column TSV file mapping contig IDs to genome bin "
+                          "names, used for the Genome Bins page and the dashboard."))
     return args
 
 
@@ -114,7 +123,8 @@ def copy_root_template(filename: str, output_dir: str) -> None:
 
 def write(records: List[Record], results: List[Dict[str, ModuleResults]],
           options: ConfigType, all_modules: List[AntismashModule],
-          skipped_record_count: int = 0) -> None:
+          skipped_record_count: int = 0,
+          all_record_ids: Optional[Iterable[str]] = None) -> None:
     """ Writes all results to a webpage, where applicable. Writes to options.output_dir
 
         Arguments:
@@ -122,6 +132,9 @@ def write(records: List[Record], results: List[Dict[str, ModuleResults]],
             results: a list of dictionaries containing all module results for records
             options: antismash config object
             skipped_record_count: number of records excluded by --skip-records-without-regions
+            all_record_ids: current and original IDs of all input records, including
+                            any excluded ones, used to report bin file contigs
+                            missing from the input
 
         Returns:
             None
@@ -157,13 +170,25 @@ def write(records: List[Record], results: List[Dict[str, ModuleResults]],
     if options.html_taxonomy:
         taxonomy_mapping = parse_taxonomy_file(options.html_taxonomy)
 
+    if all_record_ids is None:
+        all_record_ids = [record.id for record in records]
+        all_record_ids.extend(record.original_id for record in records if record.original_id)
+    bins_mapping = load_bins_mapping(options.html_bins, all_record_ids)
+
     # Generate the dashboard landing page (index.html)
-    dashboard_content = generate_dashboard(records_with, records_without, options_layer, page_title,
-                                           taxonomy_mapping=taxonomy_mapping,
-                                           skipped_record_count=skipped_record_count)
+    dashboard_content, dashboard_data = generate_dashboard(
+        records_with, records_without, options_layer, page_title,
+        taxonomy_mapping=taxonomy_mapping,
+        skipped_record_count=skipped_record_count,
+        bins_mapping=bins_mapping)
     dashboard_content = _strip_leading_whitespace(dashboard_content)
     with open(os.path.join(options.output_dir, "index.html"), "w", encoding="utf-8") as result_file:
         result_file.write(dashboard_content)
+
+    if bins_mapping is not None:
+        _write_bins_page(options_layer, page_title,
+                         build_bins_page_data(dashboard_data["bgc_table"], bins_mapping),
+                         options.output_dir)
 
 
 def copy_template_dir(template: str, output_dir: str, pattern: Optional[str] = None) -> None:
