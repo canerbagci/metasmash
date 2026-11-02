@@ -16,6 +16,7 @@ from helperlibs.bio import seqio
 
 from ..abstract import AbstractRegion
 from ..candidate_cluster import CandidateCluster
+from ...constants import get_structured_comment_key
 from ...locations import (
     FeatureLocation,
     Location,
@@ -58,8 +59,9 @@ def _build_annotations(region: RegionData, original_annotations: dict[str, Any],
 
     # while there ought to be existing antiSMASH structured comments, allow for them to be missing
     annotations.setdefault("structured_comment", {})
-    annotations["structured_comment"].setdefault("antiSMASH-Data", {})
-    antismash_comment = annotations["structured_comment"]["antiSMASH-Data"]
+    key = get_structured_comment_key()
+    annotations["structured_comment"].setdefault(key, {})
+    antismash_comment = annotations["structured_comment"][key]
 
     # any additions here need to be added in the order they should appear
 
@@ -202,14 +204,14 @@ def _adjust_features(region: RegionData, region_record: SeqRecord, record: SeqRe
 
     for feature in region_record.features:
         if feature.type == AbstractRegion.FEATURE_TYPE:
-            candidates = feature.qualifiers.get("candidate_cluster_numbers")
+            candidates = feature.qualifiers.get("candidate_clusters")
             if not candidates:
                 continue
             candidates = [str(int(num) - first_candidate_cluster + 1) for num in candidates]
-            feature.qualifiers["candidate_cluster_numbers"] = candidates
+            feature.qualifiers["candidate_clusters"] = candidates
         elif feature.type == CandidateCluster.FEATURE_TYPE:
-            new = str(int(feature.qualifiers["candidate_cluster_number"][0]) - first_candidate_cluster + 1)
-            feature.qualifiers["candidate_cluster_number"] = [new]
+            new = str(int(feature.qualifiers["candidate_cluster"][0]) - first_candidate_cluster + 1)
+            feature.qualifiers["candidate_cluster"] = [new]
             new_clusters = [str(int(num) - first_cluster + 1) for num in feature.qualifiers["protoclusters"]]
             feature.qualifiers["protoclusters"] = new_clusters
         elif feature.type in [Protocluster.FEATURE_TYPE, "proto_core"]:

@@ -75,9 +75,12 @@
  {%- if add_ncbi_context and not feature.crosses_origin() -%}
  <a href="{{urls['context']}}" target="_blank">View genomic context</a><br>
  {%- endif -%}
+<<<<<<< HEAD
  {%- if urls['mibig'] -%}
   <a href="mibig_hits.html?anchor={{urls['mibig']}}&gene={{feature.get_name()}}" target="_blank">MIBiG Hits</a><br>
  {%- endif -%}
+=======
+>>>>>>> upstream/master
  {%- if urls['transport'] -%}
   <a href="{{urls['transport']}}" target="_blank">TransportDB BLAST on this gene</a><br>
  {%- endif -%}
