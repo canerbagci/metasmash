@@ -11,6 +11,7 @@ import argparse
 from collections import defaultdict
 import multiprocessing
 import os
+from pathlib import Path
 from typing import Any, AnyStr, Dict, IO, List, Optional, Set, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite
@@ -26,6 +27,7 @@ from .executables import AlternateExecutablesAction, get_default_paths
 # not being picked up or argparse's liberal use of *kwargs.
 
 ANTISMASH_VERSION = ""  # needs to be set on module import, avoids cyclic imports
+DATABASE_DEFAULT = str(Path(__file__).parent.parent / "databases")
 
 
 class AntismashParser(argparse.ArgumentParser):
@@ -112,7 +114,14 @@ class AntismashParser(argparse.ArgumentParser):
                 return []
             lines = []
             processed_destinations.add(arg.dest)
-            flag = sorted(arg.option_strings, key=len, reverse=True)[0].lstrip('-')
+            # BooleanOptionActions always have the '--no-' variant after the others
+            # but skip over the single '-' options where alternatives exist
+            flag = ""
+            for flag in arg.option_strings:
+                if flag.startswith("--"):
+                    break
+            flag = flag.lstrip("-")
+            assert flag, arg.option_strings
             # fill in the current default if relevant
             assert arg.help is not None
             if "%(default)" in arg.help:
@@ -139,6 +148,14 @@ class AntismashParser(argparse.ArgumentParser):
                 state = "#"
                 if value:
                     state = ""
+                lines.append(f"{state}{flag}")
+            elif arg.const is None:  # BooleanOptionActions
+                state = "#"
+                if value != arg.default:
+                    if value:
+                        state = ""
+                    else:
+                        state = "no-"
                 lines.append(f"{state}{flag}")
             elif not value:
                 default = arg.default
@@ -173,12 +190,15 @@ class AntismashParser(argparse.ArgumentParser):
                     outfile.write("\n")
                 outfile.write("\n\n")
 
-    def format_help(self) -> str:
+    def format_help(self, formatter: argparse.HelpFormatter = None,
+                    ) -> str:
         """Custom help formatter"""
+        if formatter is None:
+            formatter = self._get_formatter()
         help_text = f"""
 ########### metaSMASH {ANTISMASH_VERSION} #############
 
-{self.format_usage()}
+{self.format_usage(formatter=formatter)}
 
 {self._get_args_text()}
 --------
@@ -188,10 +208,12 @@ Options
 """
         return help_text
 
-    def format_usage(self) -> str:
+    def format_usage(self, formatter: argparse.HelpFormatter = None,
+                     ) -> str:
         """ Custom usage generator """
         if self._show_all:
-            formatter = self._get_formatter()
+            if formatter is None:
+                formatter = self._get_formatter()
             formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
             return formatter.format_help()
         return f"usage: {self.prog} [-h] [options ..] sequence\n"
@@ -539,7 +561,7 @@ def basic_options() -> _SimpleArgs:
                          "(default: min(cpus, max(2, cpus // 4)) — ~cpus/4, min 2)")
     group.add_option('--databases',
                     dest='database_dir',
-                    default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'databases'),
+                    default=DATABASE_DEFAULT,
                     metavar="PATH",
                     action=FullPathAction,
                     type=str,
@@ -615,11 +637,6 @@ def advanced_options() -> ModuleArgs:
                      action=FullPathAction,
                      type=str,
                      help="Write a config file to the supplied path")
-    group.add_option('--fimo',
-                     dest='fimo',
-                     action=argparse.BooleanOptionalAction,
-                     default=False,
-                     help="Run with FIMO (requires the meme-suite)")
     group.add_option('--executable-paths',
                      dest='executables',
                      metavar="EXECUTABLE=PATH,EXECUTABLE2=PATH2,...",

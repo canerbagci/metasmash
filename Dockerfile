@@ -9,6 +9,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 # Python and Docker are not getting along encoding-wise
 ENV LANG C.UTF-8
 
+<<<<<<< HEAD
 # antiSMASH deb repo (supplies meme-suite — not available in standard Debian repos on this base).
 # apt-key is deprecated but upstream hasn't moved to the signed-by pattern yet; warning is inherited cruft.
 ADD https://dl.secondarymetabolites.org/antismash-stretch.list /etc/apt/sources.list.d/antismash.list
@@ -17,6 +18,10 @@ RUN apt-key add /tmp/antismash.asc
 
 # Install git and meme-suite
 RUN apt-get update && apt-get install -y git meme-suite && apt-get clean -y && apt-get autoclean -y && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+=======
+# Install git
+RUN apt-get update && apt-get install -y git && apt-get clean -y && apt-get autoclean -y && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+>>>>>>> upstream/master
 
 # Grab metaSMASH
 COPY . /antismash

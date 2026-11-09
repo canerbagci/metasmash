@@ -59,8 +59,14 @@ def _extract_protein_from_line(line: str) -> tuple[str, dict[str, Any]]:
 
 
 def _extract_proteins_from_fasta(fasta_path: str) -> dict[str, Any]:
+    """ Reads the protein information from FASTA files and converts them to a
+        JSON-friendly format
+    """
     proteins = {}
 
+    # common.fasta isn't used since this needs to parse additional information
+    # from the identifier line and doubling the memory use for such a large dataset
+    # would be wasteful
     with open(fasta_path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.rstrip("\n")
@@ -191,6 +197,7 @@ def run_diamond_on_all_regions(regions: Sequence[secmet.Region], database: str) 
     return stdout
 
 
+<<<<<<< HEAD
 def run_batched_clusterblast_diamond(records: Iterable[secmet.Record], database: str,
                                      out_dir: str, db_label: str) -> None:
     """ Run a single diamond search over the region genes of all given records and write
@@ -283,14 +290,18 @@ def read_precomputed_or_run_diamond(options: ConfigType, record: secmet.Record,
 
 def _load_cluster_data(file_path: str) -> dict[str, ReferenceCluster]:
     """ Loads reference cluster data from the given file
+=======
+def load_reference_clusters_from_dir(data_dir: str) -> dict[str, ReferenceCluster]:
+    """ Loads reference cluster data from the given directory.
+>>>>>>> upstream/master
 
         Arguments:
-            file_path: the path to the data file to load
+            data_dir: the path to the directory containing the database
 
         Returns:
-            a dictionary mapping reference cluster name to ReferenceCluster
-            instance
+            a mapping of reference cluster name to ReferenceCluster instance
     """
+    file_path = os.path.join(data_dir, "clusters.txt")
     with open(file_path, "r", encoding="utf-8") as handle:
         filetext = handle.read()
     lines = [line for line in filetext.splitlines() if "\t" in line]
@@ -311,6 +322,7 @@ def _load_cluster_data(file_path: str) -> dict[str, ReferenceCluster]:
     return clusters
 
 
+<<<<<<< HEAD
 def load_reference_clusters(searchtype: str) -> Dict[str, ReferenceCluster]:
     """ Loads reference cluster data for the given search type
 
@@ -346,16 +358,19 @@ def load_reference_clusters(searchtype: str) -> Dict[str, ReferenceCluster]:
 
 
 def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -> ProteinDB:
+=======
+def load_reference_proteins_from_dir(data_dir: str, *, cache_path: str | None = None) -> ProteinDB:
+>>>>>>> upstream/master
     """ Extracts protein description information from a protein FASTA database
         and places it into a JSON dataset for faster load times.
 
         Arguments:
-            searchtype: determines which database to use, allowable values:
-                            clusterblast, subclusterblast, knownclusterblast
+            data_dir: the path to the directory containing the database
             cache_path: an override for the path to the protein cache file
         Returns:
             the built protein description database
     """
+<<<<<<< HEAD
     if searchtype in _PROTEIN_CACHE and cache_path is None:
         return _PROTEIN_CACHE[searchtype]
 
@@ -371,9 +386,14 @@ def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -
         kcb_root = os.path.join(options.database_dir, "knownclusterblast")
         version = path.find_latest_database_version(kcb_root)
         data_dir = os.path.join(kcb_root, version)
+=======
+>>>>>>> upstream/master
 
+    protein_file = os.path.join(data_dir, "proteins.fasta")
     if cache_path is None:
         cache_path = os.path.join(data_dir, CACHE_FILE)
+    if not os.path.exists(cache_path):
+        build_protein_cache(protein_file, json_path=cache_path)
 
     proteins = ProteinDB.from_file(cache_path)
     if cache_path == os.path.join(data_dir, CACHE_FILE):
@@ -381,20 +401,25 @@ def load_reference_proteins(searchtype: str, *, cache_path: str | None = None) -
     return proteins
 
 
-def load_clusterblast_database(searchtype: str = "clusterblast"
+def load_clusterblast_database(searchtype: str = "clusterblast",
+                               *, data_dir: str | None = None
                                ) -> Tuple[Dict[str, ReferenceCluster], ProteinDB]:
     """ Load clusterblast database
 
         Arguments:
             searchtype: determines which database to use, allowable values:
                             clusterblast, subclusterblast, knownclusterblast
+            data_dir: overrides the automated location building from searchtype
+                      to use the explicit path provided
         Returns:
             a tuple of:
                 a dictionary mapping cluster name to Cluster instance
                 the protein database
     """
-    clusters = load_reference_clusters(searchtype)
-    proteins = load_reference_proteins(searchtype)
+    if not data_dir:
+        data_dir = os.path.join(get_config().database_dir, searchtype)
+    clusters = load_reference_clusters_from_dir(data_dir)
+    proteins = load_reference_proteins_from_dir(data_dir)
 
     return clusters, proteins
 
