@@ -20,7 +20,10 @@ from helperlibs.bio import seqio
 from antismash.common import gff_parser
 from antismash.common.errors import AntismashInputError
 from antismash.common.module_results import ModuleResults
-from antismash.common.secmet import Record
+from antismash.common.secmet import (
+    Record,
+    constants as annotation_constants,
+)
 from antismash.common.secmet.errors import SecmetInvalidInputError
 from antismash.config import get_config, update_config, Config, ConfigType
 from antismash.custom_typing import AntismashModule
@@ -118,6 +121,8 @@ def parse_input_sequence(filename: str, taxon: str = "bacteria", minimum_length:
     records: List[SeqRecord] = []
 
     for record in _strict_parse(filename):
+        if not record.id:
+            raise AntismashInputError("all records must have an identifier")
         # in no case allow record identifiers to be longer than the filesystem's
         # maximum file length, allowing for region numbers and extension
         if len(record.id) > os.pathconf("/", "PC_NAME_MAX") - len(".region000.gbk"):
@@ -192,8 +197,8 @@ def parse_input_sequence(filename: str, taxon: str = "bacteria", minimum_length:
 
     # if parsable by secmet, it has a better context on what to strip, so run
     # the secmet stripping to ensure there's no surprises
-    for record in converted_records:
-        record.strip_antismash_annotations()
+    for converted in converted_records:
+        converted.strip_antismash_annotations()
 
     return converted_records
 
@@ -223,7 +228,8 @@ def strip_record(record: SeqRecord) -> SeqRecord:
 
     # remove any record-level comment
     if "structured_comment" in record.annotations:
-        record.annotations["structured_comment"].pop("antiSMASH-Data", None)
+        comment_key = annotation_constants.get_structured_comment_key()
+        record.annotations["structured_comment"].pop(comment_key, None)
         if not record.annotations["structured_comment"]:
             record.annotations.pop("structured_comment")
 
@@ -231,9 +237,11 @@ def strip_record(record: SeqRecord) -> SeqRecord:
     kept_features = []
     for feature in record.features:
         # remove anything explicitly added by antismash, this will catch shared types (e.g. CDS_motif)
-        if "antismash" in [tool.lower() for tool in feature.qualifiers.get("tool", [])]:
+        if annotation_constants.get_tool_name() in [
+            tool.lower() for tool in feature.qualifiers.get("tool", [])
+        ]:
             continue
-        if feature.qualifiers.get("aSTool"):
+        if feature.qualifiers.get(annotation_constants.get_subtool_key()):
             continue
         # then check types explicitly as they can be too old to contain the tool
         if feature.type in old_as_types:
@@ -518,7 +526,7 @@ def trim_sequence(record: SeqRecord, start: int, end: int) -> SeqRecord:
     return new
 
 
-def records_contain_shotgun_scaffolds(records: List[Record]) -> bool:
+def records_contain_shotgun_scaffolds(records: list[Record] | list[SeqRecord]) -> bool:
     """ Check if given records contain a WGS master record or supercontig record
 
         Arguments:
