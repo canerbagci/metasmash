@@ -99,15 +99,21 @@ class TestAntismash(unittest.TestCase):
         comment = bio.annotations["structured_comment"]["antiSMASH-Data"]
         assert comment["Original ID"] == rec.original_id
 
-        # ensure that alternate branding uses the correct entry
+        # ensure that alternate branding uses the correct entry, except antiSMASH-Data part
         rec = DummyRecord()
         alt_bio = rec.to_biopython()
         options.branding = "alternate_branding"
         main.add_antismash_comments([(rec, alt_bio)], options)
         alt_structured = alt_bio.annotations["structured_comment"]
-        assert len(alt_structured) == 1, list(alt_structured)
-        comment = alt_structured[f"{options.branding}-Data"]
-        assert {"Version", "Run date"}.issubset(set(comment))
+        assert list(alt_structured) == ["antiSMASH-Data"]
+        assert {"Version", "Run date"}.issubset(set(alt_structured["antiSMASH-Data"]))
+
+        from antismash.common.secmet.features.region import helpers
+        region = helpers.RegionData(start=0, end=10, candidate_clusters=(), subregions=())
+        region_annotations = helpers._build_annotations(region, alt_bio.annotations, len(alt_bio))
+        region_structured = region_annotations["structured_comment"]
+        assert list(region_structured) == ["antiSMASH-Data"]
+        assert {"Version", "Run date", "NOTE", "Orig. start"}.issubset(set(region_structured["antiSMASH-Data"]))
 
     def test_canonical_base_filename(self):
         options = build_parser(modules=self.all_modules).parse_args([])

@@ -47,6 +47,7 @@ from antismash.common.errors import AntismashInputError
 from antismash.common.module_results import ModuleResults, DetectionResults
 from antismash.common.path import get_full_path
 from antismash.common.secmet import Record
+from antismash.common.secmet import constants as annotation_constants
 from antismash.common import subprocessing
 from antismash.detection import DetectionStage
 from antismash.outputs import html
@@ -567,7 +568,9 @@ def add_antismash_comments(records: List[Tuple[Record, SeqRecord]], options: Con
         if "structured_comment" not in bio_record.annotations:
             bio_record.annotations["structured_comment"] = {}
 
-        bio_record.annotations["structured_comment"][f"{options.branding}-Data"] = comment
+        # don't use branding name. it breaks downstream tools, like BiG-SCAPE and BiG-SLICE
+        comment_key = annotation_constants.get_structured_comment_key()
+        bio_record.annotations["structured_comment"][comment_key] = comment
 
 
 def _filter_records_for_output(
