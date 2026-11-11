@@ -3,18 +3,21 @@
 
 """ Responsible for creating the single web page results """
 
+import abc as abstract
 import base64
+import dataclasses
 import gzip
 import importlib
 import pkgutil
 import string
 import os
-from typing import cast, Any, Dict, IO, List, Tuple, Optional
+from typing import cast, Any, Callable, ClassVar, Dict, IO, List, Tuple, Optional
 
 from antismash.common import json, path
 from antismash.common.html_renderer import (
     FileTemplate,
     HTMLSections,
+    Markup,
     docs_link,
     get_antismash_js_version,
     get_antismash_js_url,
@@ -32,6 +35,142 @@ from .visualisers import gene_table
 from .streaming_summary import StreamingRecordSummary
 
 TEMPLATE_PATH = path.get_full_path(__file__, "templates")
+
+_BUTTON_CLASS = "button-like legend-selector"
+_SYMBOL_CLASS = "legend-symbol"
+_STATIC_CLASS = "legend-selector-static"
+
+
+@dataclasses.dataclass(kw_only=True)
+class LegendBase(abstract.ABC):
+    """ A base class for region viewer legends.
+    """
+    @abstract.abstractmethod
+    def build_html(self) -> Markup:
+        """ The HTML to use for this specific legend """
+
+# pylint: disable=unused-argument
+    def is_relevant(self, results: dict[str, ModuleResults], region: RegionLayer,
+                    record: Record, options: ConfigType,
+                    ) -> bool:
+        """ Determines if the legend is relevant for the given result set(s).
+
+            Arguments:
+                results: a mapping of module name to results for each module
+                region: the region in question
+                record: the record the region belongs to
+                options: the general run options
+
+            Returns:
+                a boolean indicating if the legend is relevant
+        """
+        return True
+# pylint: enable=unused-argument
+
+
+@dataclasses.dataclass(kw_only=True)
+class LegendSpacer(LegendBase):
+    """ An empty legend object for use as a spacer """
+    def build_html(self) -> Markup:
+        return Markup('<div style="margin-right: 2em"></div>')
+
+
+@dataclasses.dataclass(kw_only=True)
+class Legend(LegendBase):
+    """ A full legend item, specifying any HTML, CSS, and relevance.
+
+        Arguments:
+            css_class: the CSS class(es) to add to the legend element created
+            label: the text shown to the user in the legend element
+            include_css_in_inner: whether the CSS should also apply to child elements
+            relevant_when: an optional override function to use for determining relevance
+    """
+    css_class: str
+    label: str
+    include_css_in_inner: bool = True
+    relevant_when: None | Callable[[dict[str, ModuleResults], RegionLayer, Record, ConfigType],
+                                   bool] = None
+    OUTER_CLASS: ClassVar[str] = _BUTTON_CLASS
+    INNER_CLASS: ClassVar[str] = "legend-field"
+
+    def is_relevant(self, results: dict[str, ModuleResults], region: RegionLayer, record: Record,
+                    options: ConfigType) -> bool:
+        if self.relevant_when is None:
+            return super().is_relevant(results, region, record, options)
+        return self.relevant_when(results, region, record, options)
+
+    def _build_core(self) -> Markup:
+        return Markup("")
+
+    def build_html(self) -> Markup:
+        return Markup(
+            f'<div class="{self.OUTER_CLASS}" data-id="{self.css_class}">'
+            f' <div class="{self.INNER_CLASS} {self.css_class if self.include_css_in_inner else ""}">'
+            f'  {self._build_core()}</div>'
+            f' <div class="legend-label">{self.label}</div>'
+            "</div>"
+        )
+
+
+@dataclasses.dataclass(kw_only=True)
+class SymbolLegend(Legend):
+    """ A legend variant that can display a symbol in the label
+
+        Arguments:
+            symbol: the markup to use for the symbol itself
+    """
+    INNER_CLASS: ClassVar[str] = _SYMBOL_CLASS
+    symbol: Markup
+    include_css_in_inner: bool = False
+
+    def _build_core(self) -> Markup:
+        return self.symbol
+
+
+@dataclasses.dataclass(kw_only=True)
+class StaticLegend(Legend):
+    """ A legend variant that cannot be interacted with """
+    OUTER_CLASS: ClassVar[str] = "legend-selector-static"
+
+
+@dataclasses.dataclass(kw_only=True)
+class StaticSymbolLegend(SymbolLegend, StaticLegend):
+    """ A legend variant that contains a symbol and cannot be interacted with """
+
+
+LEGENDS = [
+    Legend(css_class="legend-type-biosynthetic", label="core_biosynthetic genes"),
+    Legend(css_class="legend-type-biosynthetic-additional", label="additional biosynthetic genes"),
+    Legend(css_class="legend-type-transport", label="transport related genes"),
+    Legend(css_class="legend-type-regulatory", label="regulatory genes"),
+    LegendSpacer(),
+    SymbolLegend(css_class="legend-resistance", label="resistance", symbol=Markup(
+        '<svg viewbox="0 0 8 8">'
+        ' <rect x=0 y=2 height=4 width=8 class="svgene-resistance"></rect>'
+        '</svg>'
+    )),
+    SymbolLegend(css_class="legend-tta-codon", label="TTA codons", symbol=Markup(
+            '<svg viewbox="0 0 6 6">'
+            ' <polyline class="svgene-tta-codon" points="3,0 0,6 6,6 3,0">'
+            '</svg>'
+        ), relevant_when=(
+            lambda results, _region, record, options:
+                tta.__name__ in results and record.get_gc_content() >= options.tta_threshold
+        ),
+    ),
+    SymbolLegend(css_class="legend-binding-site", label="binding site", symbol=Markup(
+            '<svg viewbox="0 -1 8 8">'
+            ' <g class="svgene-binding-site">'
+            '  <line x1="4" y1="8" x2="4" y1="4"></line>'
+            '  <circle cx="4" cy="2" r="2"></circle>'
+            ' </g>'
+            '</svg>'
+        ), relevant_when=lambda results, _region, _record, _options: tfbs.__name__ in results,
+    ),
+    StaticLegend(css_class="legend-border-cassis", label="cluster extent as predicted by CASSIS",
+                 relevant_when=lambda _results, region, _record, _options: region.has_subregion_by_tool("cassis"),
+                 ),
+]
 
 
 def _strip_leading_whitespace(text: str) -> str:
@@ -286,7 +425,7 @@ def _render_all_region_html(record_layers: List[RecordLayer],
                 results_by_record_id=results_by_record_id,
                 sections=html_sections,
                 svg_tooltip=svg_tooltip,
-                tta_name=tta.__name__, tfbs_name=tfbs.__name__,
+                legends=LEGENDS,
             )
             region_html[anchor] = content
 
@@ -595,7 +734,7 @@ def render_region_files_for_record(record: Record, record_results: Dict[str, Mod
             results_by_record_id=results_by_record_id,
             sections=html_sections,
             svg_tooltip=svg_tooltip,
-            tta_name=tta.__name__, tfbs_name=tfbs.__name__,
+            legends=LEGENDS,
         )
         # encode here (in the worker) so the parent only does the cheap append
         region_payloads.append((anchor, encode_region_payload(json_region, js_results.get(anchor, {}), content)))
@@ -685,7 +824,7 @@ def finalize_streaming_html_output(lightweight_records: List[Dict[str, Any]],
         records_without_regions=[],
         skipped_record_count=skipped_record_count,
         svg_tooltip=svg_tooltip, get_region_css=js.get_region_css,
-        as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__,
+        as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__, legends=LEGENDS,
         lazy_loading=True,
     )
     regions_content = _strip_leading_whitespace(regions_content)
@@ -768,7 +907,7 @@ def finalize_html_output(lightweight_records: List[Dict[str, Any]],
         records_without_regions=record_layers_without_regions,
         skipped_record_count=skipped_record_count,
         svg_tooltip=svg_tooltip, get_region_css=js.get_region_css,
-        as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__,
+        as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__, legends=LEGENDS,
         lazy_loading=True,
     )
     regions_content = _strip_leading_whitespace(regions_content)
@@ -794,8 +933,13 @@ def finalize_html_output(lightweight_records: List[Dict[str, Any]],
 
 def generate_webpage(records: List[Record], results: List[Dict[str, ModuleResults]],
                      options: ConfigType, all_modules: List[AntismashModule],
-                     skipped_record_count: int = 0) -> str:
+                     skipped_record_count: int = 0,
+                     legends: list[LegendBase] | None = None,
+                     ) -> str:
     """ Generates the HTML itself """
+
+    if legends is None:
+        legends = LEGENDS
 
     # Phase 1: Build all data structures (sequential)
     json_records, js_results = build_json_data(records, results, options, all_modules)
@@ -830,7 +974,7 @@ def generate_webpage(records: List[Record], results: List[Dict[str, ModuleResult
                               skipped_record_count=skipped_record_count,
                               svg_tooltip=svg_tooltip, get_region_css=js.get_region_css,
                               as_js_url=as_js_url, tta_name=tta.__name__, tfbs_name=tfbs.__name__,
-                              lazy_loading=True,
+                              lazy_loading=True, legends=legends,
                               )
 
     _write_region_page(options_layer, page_title, as_js_url, options.output_dir)
